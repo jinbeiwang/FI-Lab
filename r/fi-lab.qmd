@@ -1,0 +1,3968 @@
+---
+title: "Association between Frailty Index Based on Laboratory Tests and All-cause Mortality in Critically Ill Patients with AKI"
+format: html
+editor: visual
+---
+
+## Quarto
+
+Quarto enables you to weave together content and executable code into a finished document. To learn more about Quarto see <https://quarto.org>.
+
+## Running Code
+
+When you click the **Render** button a document will be generated that includes both content and the output of embedded code. You can embed code like this:
+
+# 导入数据
+
+```{r}
+# 安装并加载必要的包
+if(!require(haven)) install.packages("haven")
+library(haven)
+if(!require(readxl)) install.packages("readxl")  # 如果尚未安装
+library(readxl)
+# 读取SAS数据集
+fi_lab <- read_sas("ads/fi_lab.sas7bdat")
+tte <- read_sas("ads/tte.sas7bdat")
+
+# 读取元数据
+metadata <- read_excel("fi_lab_metadata.xlsx")
+```
+
+# **missForest 缺失值插补**
+
+## 查看数据缺失情况：
+
+<!--# bmi, sofa部分缺失 -->
+
+```{r}
+if(!require(mice)) install.packages("mice")  # 用于结果比较和评估
+if(!require(VIM)) install.packages("VIM") # 用于可视化缺失数据
+if(!require(dplyr)) install.packages("dplyr")
+library(mice)
+library(VIM)
+library(dplyr)
+
+# 查看数据结构
+str(fi_lab)
+# 读取数据
+check_data <-fi_lab %>%
+  select(-all_of(c("Q1","Q2","Q3","subject_id","stay_id","hadm_id","total_number","total_deficit", "flab","keep")))
+# 检查缺失数据模式
+summary(check_data)  # 查看各变量缺失情况
+md.pattern(check_data)  # 可视化缺失模式
+# 可视化缺失数据
+aggr_plot <- aggr(check_data, col=c('navyblue','red'), 
+                  numbers=TRUE, sortVars=TRUE,
+                  labels=names(check_data), cex.axis=.7,
+                  gap=3, ylab=c("Missing data pattern","Pattern"))
+
+#Remove if missing>20%
+#Check no missing >20%
+```
+
+## 缺失数据汇总附表
+
+```{r}
+# 加载必要的包
+if(!require(mice)) install.packages("mice")
+if(!require(VIM)) install.packages("VIM")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(flextable)) install.packages("flextable")
+if(!require(officer)) install.packages("officer")
+if(!require(tidyr)) install.packages("tidyr")
+
+library(mice)
+library(VIM)
+library(dplyr)
+library(flextable)
+library(officer)
+library(tidyr)
+
+# 查看数据结构
+str(fi_lab)
+
+# 读取数据（保持您原有的数据处理）
+check_data <- fi_lab %>%
+  select(-all_of(c("Q1","Q2","Q3","subject_id","stay_id","hadm_id","total_number","total_deficit", "flab","keep")))
+
+# 检查缺失数据模式
+summary(check_data)
+md.pattern(check_data)
+
+# 安全的可视化缺失数据（避免图形参数错误）
+plot_missing_data <- function(data) {
+  tryCatch({
+    # 清理图形环境
+    while (!is.null(dev.list())) dev.off()
+    
+    # 可视化缺失数据
+    aggr_plot <- aggr(data, 
+                      col=c('navyblue','red'), 
+                      numbers=TRUE, 
+                      sortVars=TRUE,
+                      labels=names(data), 
+                      cex.axis=0.7,
+                      gap=3, 
+                      ylab=c("Missing data pattern","Pattern"))
+    
+    return(aggr_plot)
+  }, error = function(e) {
+    cat("图形显示出现问题，跳过可视化步骤\n")
+    cat("错误信息:", e$message, "\n")
+    return(NULL)
+  })
+}
+
+# 尝试生成缺失数据图
+aggr_result <- plot_missing_data(check_data)
+
+# 修复版：创建缺失率统计表函数
+create_missing_table <- function(data) {
+  # 计算总样本量
+  total_n <- nrow(data)
+  
+  # 使用更简单的方法计算缺失情况
+  missing_stats <- data.frame(
+    Variable = names(data),
+    Number_of_missing = sapply(data, function(x) sum(is.na(x))),
+    stringsAsFactors = FALSE
+  )
+  
+  # 计算缺失百分比
+  missing_stats$Percent_of_missing <- round((missing_stats$Number_of_missing / total_n) * 100, 2)
+  
+  # 按缺失数量降序排列
+  missing_stats <- missing_stats[order(missing_stats$Number_of_missing, decreasing = TRUE), ]
+  
+  # 重置行名
+  rownames(missing_stats) <- NULL
+  
+  return(missing_stats)
+}
+
+# 生成缺失率表
+missing_table <- create_missing_table(check_data)
+
+# 显示前几行数据
+cat("缺失率统计结果（前10行）：\n")
+print(head(missing_table, 10))
+
+# 创建包含变量类型的详细表格
+create_detailed_missing_table <- function(data) {
+  # 获取变量类型
+  var_types <- sapply(data, function(x) {
+    if(is.numeric(x)) {
+      return("Continuous")
+    } else if(is.factor(x) || is.character(x)) {
+      return("Categorical")
+    } else {
+      return("Other")
+    }
+  })
+  
+  # 计算总样本量
+  total_n <- nrow(data)
+  
+  # 创建详细统计表
+  detailed_stats <- data.frame(
+    Variable = names(data),
+    Variable_Type = var_types,
+    Number_of_missing = sapply(data, function(x) sum(is.na(x))),
+    stringsAsFactors = FALSE
+  )
+  
+  # 计算缺失百分比
+  detailed_stats$Percent_of_missing <- round((detailed_stats$Number_of_missing / total_n) * 100, 2)
+  
+  # 按缺失数量降序排列
+  detailed_stats <- detailed_stats[order(detailed_stats$Number_of_missing, decreasing = TRUE), ]
+  
+  # 重置行名
+  rownames(detailed_stats) <- NULL
+  
+  return(detailed_stats)
+}
+
+# 创建三线表格式函数
+create_three_line_table <- function(missing_data, include_type = FALSE) {
+  
+  if(include_type) {
+    # 包含变量类型的版本
+    ft <- flextable(missing_data) %>%
+      set_header_labels(
+        Variable = "Variable",
+        Variable_Type = "Type", 
+        Number_of_missing = "Number of missing",
+        Percent_of_missing = "Percent of missing (%)"
+      ) %>%
+      width(j = 1, width = 2.0) %>%
+      width(j = 2, width = 1.2) %>%
+      width(j = 3, width = 1.5) %>%
+      width(j = 4, width = 1.8) %>%
+      align(align = "left", j = 1:2, part = "body") %>%
+      align(align = "center", j = 3:4, part = "body")
+  } else {
+    # 基础版本
+    ft <- flextable(missing_data) %>%
+      set_header_labels(
+        Variable = "Variable",
+        Number_of_missing = "Number of missing", 
+        Percent_of_missing = "Percent of missing (%)"
+      ) %>%
+      width(j = 1, width = 2.5) %>%
+      width(j = 2, width = 1.8) %>%
+      width(j = 3, width = 2.0) %>%
+      align(align = "left", j = 1, part = "body") %>%
+      align(align = "center", j = 2:3, part = "body")
+  }
+  
+  # 通用格式设置
+  ft <- ft %>%
+    # 设置字体和大小
+    font(fontname = "Times New Roman", part = "all") %>%
+    fontsize(size = 11, part = "all") %>%
+    # 设置标题对齐
+    align(align = "center", part = "header") %>%
+    # 添加三线表边框
+    border_remove() %>%
+    hline_top(border = fp_border(color = "black", width = 2), part = "header") %>%
+    hline_bottom(border = fp_border(color = "black", width = 1), part = "header") %>%
+    hline_bottom(border = fp_border(color = "black", width = 2), part = "body") %>%
+    # 设置行高
+    height_all(height = 0.3)
+  
+  return(ft)
+}
+
+# 保存为Word文档的函数
+save_to_word <- function(table, filename = "missing_rate_table.docx", table_title = "Table S3: Missing rate for demographics and clinical variables extracted from the database during the observation period.") {
+  tryCatch({
+    # 创建Word文档
+    doc <- read_docx()
+    
+    # 添加表格标题
+    doc <- doc %>%
+      body_add_par(table_title, style = "Normal") %>%
+      body_add_par("") %>%
+      body_add_flextable(table) %>%
+      body_add_par("") %>%
+      body_add_par("Note: This table shows the missing data pattern for all variables included in the analysis.", 
+                   style = "Normal")
+    
+    # 保存文档
+    print(doc, target = filename)
+    cat("✓ 表格已成功保存为:", filename, "\n")
+    
+  }, error = function(e) {
+    cat("❌ 保存Word文档时出错:", e$message, "\n")
+    cat("请检查是否已正确安装officer包\n")
+    
+    # 尝试保存为HTML格式作为备选
+    tryCatch({
+      html_filename <- gsub("\\.docx$", ".html", filename)
+      save_as_html(table, html_filename)
+    }, error = function(e2) {
+      cat("HTML保存也失败了\n")
+    })
+  })
+}
+
+# HTML备选保存函数
+save_as_html <- function(table, filename) {
+  html_content <- htmltools_value(table)
+  writeLines(html_content, filename)
+  cat("✓ 已保存HTML版本:", filename, "\n")
+}
+
+# 生成基础版本表格
+cat("\n=== 正在生成基础版缺失率表格 ===\n")
+basic_table <- create_three_line_table(missing_table, include_type = FALSE)
+print(basic_table)
+
+# 生成详细版本表格
+cat("\n=== 正在生成详细版缺失率表格 ===\n")
+detailed_missing_table <- create_detailed_missing_table(check_data)
+detailed_table <- create_three_line_table(detailed_missing_table, include_type = TRUE)
+print(detailed_table)
+
+# 保存为Word格式
+cat("\n=== 正在保存Word文档 ===\n")
+save_to_word(basic_table, "missing_rate_table_basic.docx")
+save_to_word(detailed_table, "missing_rate_table_detailed.docx")
+
+# 分析结果总结
+cat("\n", rep("=", 50), "\n", sep = "")
+cat("         缺失数据分析结果总结\n")
+cat(rep("=", 50), "\n", sep = "")
+
+total_vars <- ncol(check_data)
+total_samples <- nrow(check_data)
+high_missing_vars <- missing_table[missing_table$Percent_of_missing > 20, ]
+zero_missing_vars <- missing_table[missing_table$Number_of_missing == 0, ]
+
+cat("📊 数据基本信息:\n")
+cat("   总样本量:", total_samples, "\n")
+cat("   总变量数:", total_vars, "\n")
+cat("   完全无缺失变量:", nrow(zero_missing_vars), "个\n")
+
+if(nrow(high_missing_vars) > 0) {
+  cat("\n⚠️  缺失率超过20%的变量 (", nrow(high_missing_vars), "个):\n")
+  for(i in 1:nrow(high_missing_vars)) {
+    cat("   ", i, ".", high_missing_vars$Variable[i], 
+        ": ", high_missing_vars$Percent_of_missing[i], "%\n")
+  }
+  cat("\n💡 建议: 考虑是否需要移除这些变量或进行插补处理\n")
+} else {
+  cat("\n✅ 所有变量的缺失率都在20%以下\n")
+}
+
+# 显示缺失率分布
+cat("\n📈 缺失率分布:\n")
+missing_ranges <- cut(missing_table$Percent_of_missing, 
+                      breaks = c(0, 5, 10, 15, 20, 100),
+                      labels = c("0-5%", "5-10%", "10-15%", "15-20%", ">20%"),
+                      include.lowest = TRUE)
+missing_dist <- table(missing_ranges)
+for(i in 1:length(missing_dist)) {
+  cat("   ", names(missing_dist)[i], ":", missing_dist[i], "个变量\n")
+}
+
+cat("\n📁 生成的文件:\n")
+cat("   1. missing_rate_table_basic.docx - 基础三线表\n")
+cat("   2. missing_rate_table_detailed.docx - 包含变量类型的详细表\n")
+
+cat("\n✨ 任务完成！\n")
+```
+
+## 因子化分类变量-\>missForest 准备
+
+```{r}
+# 加载必要的包
+if(!require(readxl)) install.packages("readxl")  # 如果尚未安装
+library(readxl)
+
+# 1. 读取变量元数据文件（文件名为fi_lab_metadata.xlsx"）
+# 文件应包含三列：变量名、变量类型、分类标志
+metadata <- read_excel("fi_lab_metadata.xlsx")
+
+# 查看元数据
+print(metadata)
+
+
+# 2. 识别需要转换为因子的分类变量
+# 元数据中有一个名为"flag"的列，包含"Categorical"或"Continuous"
+categorical_vars <- metadata$variable_name[metadata$flag == "Categorical"]
+
+# 检查找到的分类变量
+cat("需要转换为因子的分类变量:\n")
+print(categorical_vars)
+
+# 3. 将这些变量转换为因子
+# 首先确保这些变量存在于数据集中
+existing_categorical_vars <- categorical_vars[categorical_vars %in% names(fi_lab)]
+
+if(length(existing_categorical_vars) > 0) {
+  fi_lab[existing_categorical_vars] <- lapply(fi_lab[existing_categorical_vars], as.factor)
+  cat("\n成功将以下变量转换为因子:\n")
+  print(existing_categorical_vars)
+} else {
+  cat("\n未找到需要转换的分类变量。请检查元数据文件中的变量名是否与数据集匹配。\n")
+}
+
+# 4. 验证转换结果
+cat("\n转换后的变量类型:\n")
+print(sapply(fi_lab[existing_categorical_vars], class))
+
+#删除日期列，这些变量没有缺失，但是会影响missForest插补
+
+exclude_vars <- metadata$variable_name[metadata$flag == "Date"]
+fi_lab <- fi_lab %>% select(-any_of(exclude_vars))
+
+str(fi_lab)
+
+```
+
+## 用missForest进行插补基线变量
+
+#### 使用missForest包进行缺失数据的插补，它基于随机森林算法，能有效处理混合类型数据。
+
+```{r}
+# 安装并加载必要的包
+if(!require(missForest)) install.packages("missForest")
+if(!require(tidyverse)) install.packages("tidyverse")
+library(missForest)
+library(tidyverse)
+
+# 如果imputed data存在，则不用再run missForest,以免耗时
+output_file <- "imputed_data.csv"  # 你之前保存的CSV路径
+
+# 判断文件是否存在
+if (file.exists(output_file)) {
+  # 存在：直接读取插补好的数据
+  imputed_data <- read_csv(output_file)  # 或 read.csv(output_file)
+  print("插补数据已存在，直接读取完成")
+} else {
+  # 不存在：运行 missForest 插补并保存结果
+  print("开始运行 missForest 插补...")
+  # 转换为传统data.frame（通常不需要,但是此处missForest不work）
+  fi_lab <- as.data.frame(fi_lab)
+  # 使用missForest进行插补： 
+  # default value for ntree is 100
+  set.seed(123)  # 设置随机种子以确保结果可复现
+  imputed_data <- missForest(fi_lab, verbose = TRUE,maxiter = 20)
+
+  # 获取插补后的数据集
+  completed_data <- imputed_data$ximp
+  
+  # 查看插补误差
+  print(imputed_data$OOBerror)
+
+  # 保存插补后的数据
+  write.csv(completed_data, "imputed_data.csv", row.names = FALSE)
+}
+
+```
+
+# 合并基线变量到tte数据
+
+```{r}
+# 读取数据
+imputed_data <- read.csv("imputed_data.csv")
+
+# 2. 识别需要转换为因子的分类变量
+# 元数据中有一个名为"flag"的列，包含"Categorical"或"Continuous"
+categorical_vars <- metadata$variable_name[metadata$flag == "Categorical"]
+
+# 检查找到的分类变量
+cat("需要转换为因子的分类变量:\n")
+print(categorical_vars)
+
+# 3. 将这些变量转换为因子
+# 首先确保这些变量存在于数据集中
+existing_categorical_vars <- categorical_vars[categorical_vars %in% names(fi_lab)]
+
+if(length(existing_categorical_vars) > 0) {
+  imputed_data[existing_categorical_vars] <- lapply(imputed_data[existing_categorical_vars], as.factor)
+  cat("\n成功将以下变量转换为因子:\n")
+  print(existing_categorical_vars)
+} else {
+  cat("\n未找到需要转换的分类变量。请检查元数据文件中的变量名是否与数据集匹配。\n")
+}
+# 合并到tte data中去
+tte<- tte %>%
+      select(subject_id, stay_id, hadm_id, testcd, test, cnsr, aval) %>%
+      left_join(imputed_data, 
+                by = c("subject_id", "stay_id", "hadm_id")) 
+
+ # 保存合并后的数据
+  write.csv(tte, "tte.csv", row.names = FALSE)
+```
+
+# Table 1 Characteristics and outcomes of participants categorized by FI-Lab index
+
+#### 使用compareGroups包生成标准化的描述性统计表，并通过flextable和officer导出为Word格式。
+
+```{r}
+# 安装和加载必要的包
+if(!require(compareGroups)) install.packages("compareGroups")
+if(!require(flextable)) install.packages("flextable")
+if(!require(officer)) install.packages("officer")
+if(!require(dplyr)) install.packages("dplyr")
+library(compareGroups)
+library(flextable)
+library(officer)
+library(dplyr)
+
+# 准备元数据
+metadata_tableone <- metadata %>%
+  filter(tableone == "Y") %>%
+  arrange(order) %>%
+  mutate(
+    label = ifelse(is.na(label) | label == "", variable_name, label)
+  )
+
+# 准备数据
+# 将分类变量转为因子
+for (var in metadata_tableone$variable_name[metadata_tableone$flag == "Categorical"]) {
+  imputed_data[[var]] <- factor(imputed_data[[var]])
+}
+
+# 设置变量标签
+for (i in 1:nrow(metadata_tableone)) {
+  var_name <- metadata_tableone$variable_name[i]
+  var_label <- metadata_tableone$label[i]
+  attr(imputed_data[[var_name]], "label") <- var_label
+}
+
+# 定义分组变量（如果需要按组比较）
+group_var <- "level" 
+
+# 创建compareGroups对象
+cg <- compareGroups(
+  as.formula(paste(group_var, "~ .")),
+  data = imputed_data[, c(group_var, metadata_tableone$variable_name)],
+  method = NA,  # 自动选择方法
+  alpha = 0.05,  # 显著性水平
+  include.label = TRUE  # 包含变量标签
+)
+
+# 提取 hide = "0" 的变量名
+xx0 <- metadata$variable_name[metadata$hide0 == "1" & !is.na(metadata$hide0)]
+xx0 <- as.character(xx0)
+hide_list <- setNames(rep("0", length(xx0)), xx0)
+
+# 创建表格对象 (保持您原有设置)
+table1 <- createTable(
+  cg,
+  show.all = TRUE,
+  show.p.overall = TRUE,
+  show.p.trend = FALSE,
+  show.ratio = FALSE,
+  hide.no = "no", hide = hide_list,
+  digits = 2,
+  digits.ratio = 2,
+  sd.type = 2,
+  q.type = c(1, 3)
+)
+
+# 1. 使用compareGroups导出到CSV (兼容中文)
+export2csv(table1, file = "Table1_raw.csv")
+
+# 2. 读取CSV并进行数据清洗
+custom_colnames <- c("variables", "Total", "Q1", "Q2", "Q3","Q4","P_value")
+table_df <- read.csv("Table1_raw.csv", stringsAsFactors = FALSE, 
+                     encoding = "UTF-8", col.names = custom_colnames) %>%
+  mutate(
+    variables = gsub(":.*$", "", variables),  # 删除冒号
+    variables = case_when(
+      trimws(variables) == "0" ~ "    No",
+      trimws(variables) == "1" ~ "    Yes",
+      trimws(variables) == "F" ~ "    Female",
+      trimws(variables) == "M" ~ "    Male",
+      TRUE ~ variables  # 保留其他不变
+    )
+  )
+
+
+ft <- table_df %>%
+  flextable() %>%
+  
+  # ===== 基础格式设置 =====
+theme_booktabs() %>%                      # 专业三线表样式
+  font(fontname = "Times New Roman", part = "all") %>%  # 学术字体
+  fontsize(size = 10, part = "all") %>%      # 统一字号
+  align(align = "center", part = "header") %>% # 表头居中
+  align(j = 1, align = "left") %>%           # 首列左对齐
+  
+  # ===== 列宽优化 =====
+set_table_properties(layout = "autofit") %>% 
+  width(j = 1, width = 2.5) %>%             # 变量名列加宽
+  hrule(rule = "exact")               # 固定行高
+
+
+# 保存为Word文档
+save_as_docx(ft, 
+             path = "Table 1.docx", 
+             pr_section = prop_section(page_size = page_size(orient = "landscape")))
+
+
+
+
+
+
+```
+
+# Table 2 Baseline characteristics according to survivors and non-survivors groups
+
+#### 使用compareGroups包生成标准化的描述性统计表，并通过flextable和officer导出为Word格式。
+
+```{r}
+# 安装和加载必要的包
+if(!require(compareGroups)) install.packages("compareGroups")
+if(!require(flextable)) install.packages("flextable")
+if(!require(officer)) install.packages("officer")
+if(!require(dplyr)) install.packages("dplyr")
+library(compareGroups)
+library(flextable)
+library(officer)
+library(dplyr)
+
+# 准备元数据
+metadata_tableone <- metadata %>%
+  filter(table2 == "Y") %>%
+  arrange(order) %>%
+  mutate(
+    label = ifelse(is.na(label) | label == "", variable_name, label)
+  )
+
+# 准备数据
+# 将分类变量转为因子
+for (var in metadata_tableone$variable_name[metadata_tableone$flag == "Categorical"]) {
+  imputed_data[[var]] <- factor(imputed_data[[var]])
+}
+
+# 单独设置is_dead的因子水平（关键修改）
+if ("is_dead" %in% names(imputed_data)) {
+  imputed_data$is_dead <- factor(
+    imputed_data$is_dead,
+    levels = c(0, 1),
+    labels = c("Survivor", "Non-survivor")
+  )
+}
+
+# 设置变量标签
+for (i in 1:nrow(metadata_tableone)) {
+  var_name <- metadata_tableone$variable_name[i]
+  var_label <- metadata_tableone$label[i]
+  attr(imputed_data[[var_name]], "label") <- var_label
+}
+
+# 定义分组变量（修改为death_within_icu_28days）
+group_var <- "death_within_icu_28days"  # 修改点
+
+# 创建compareGroups对象
+cg <- compareGroups(
+  as.formula(paste(group_var, "~ .")),
+  data = imputed_data[, c(group_var, metadata_tableone$variable_name)],
+  method = NA,  # 自动选择方法
+  alpha = 0.05,  # 显著性水平
+  include.label = TRUE  # 包含变量标签
+)
+
+# 提取 hide = "0" 的变量名
+xx0 <- metadata$variable_name[metadata$hide0 == "1" & !is.na(metadata$hide0)]
+xx0 <- as.character(xx0)
+hide_list <- setNames(rep("0", length(xx0)), xx0)
+
+# 创建表格对象
+table1 <- createTable(
+  cg,
+  show.all = TRUE,
+  show.p.overall = TRUE,
+  show.p.trend = FALSE,
+  show.ratio = FALSE,
+  hide.no = "no", hide = hide_list,
+  digits = 2,
+  digits.ratio = 2,
+  sd.type = 2,
+  q.type = c(1, 3)
+)
+
+# 修改列名以适应新分组（关键修改）
+custom_colnames <- c("variables", "Total", "Survivor", "Non-survivor", "P_value")  # 修改点
+
+# 导出和清洗数据
+export2csv(table1, file = "Table2_raw.csv")
+table_df <- read.csv("Table2_raw.csv", stringsAsFactors = FALSE, 
+                     encoding = "UTF-8", col.names = custom_colnames) %>%
+  mutate(
+    variables = gsub(":.*$", "", variables),  # 删除冒号
+    variables = case_when(
+      trimws(variables) == "0" ~ "    No",
+      trimws(variables) == "1" ~ "    Yes",
+      trimws(variables) == "F" ~ "    Female",
+      trimws(variables) == "M" ~ "    Male",
+      TRUE ~ variables
+    )
+  )
+
+# 创建flextable
+ft <- table_df %>%
+  flextable() %>%
+  theme_booktabs() %>%
+  font(fontname = "Times New Roman", part = "all") %>%
+  fontsize(size = 10, part = "all") %>%
+  align(align = "center", part = "header") %>%
+  align(j = 1, align = "left") %>%
+  set_table_properties(layout = "autofit") %>% 
+  width(j = 1, width = 2.5) %>%
+  hrule(rule = "exact")
+
+# 保存为Word文档
+save_as_docx(ft, 
+             path = "Table 2.docx", 
+             pr_section = prop_section(page_size = page_size(orient = "landscape")))
+```
+
+# Table 3 Cox proportional hazard models for 28-Day ICU and in-hospital mortality
+
+## 共线性诊断VIF
+
+```{r}
+# 安装并加载必要的包
+if(!require(car)) install.packages("car")
+if(!require(survival)) install.packages("survival")
+if(!require(corrplot)) install.packages("corrplot")
+library(car)
+library(survival)
+library(corrplot)
+library(tidyverse)
+
+# 读取数据
+data <-tte %>% filter(testcd=="ICU28D") %>%
+  select(-all_of(c("Q1","Q2","Q3","subject_id","stay_id","hadm_id","total_number","total_deficit", "flab")))
+
+# 首先检查自变量之间的相关性
+# 注意：仅选择数值型变量进行相关性分析
+numeric_vars <- names(data)[sapply(data, is.numeric)]
+# 从numeric_vars中排除时间和事件变量
+time_event_vars <- c("aval", "cnsr")  # 替换为您的时间和事件变量名
+numeric_vars <- setdiff(numeric_vars, time_event_vars)
+
+# 计算相关矩阵
+if(length(numeric_vars) > 1) {
+  cor_matrix <- cor(data[, numeric_vars], use = "pairwise.complete.obs")
+  
+  # 可视化相关矩阵
+  corrplot(cor_matrix, method = "circle", type = "upper", 
+           tl.col = "black", tl.srt = 45,
+           title = "自变量相关矩阵")
+  
+  # 找出高度相关的变量对 (|r| > 0.7)
+  high_cor <- which(abs(cor_matrix) > 0.7 & abs(cor_matrix) < 1, arr.ind = TRUE)
+  if(nrow(high_cor) > 0) {
+    high_cor_pairs <- data.frame(
+      Var1 = numeric_vars[high_cor[, 1]],
+      Var2 = numeric_vars[high_cor[, 2]],
+      Correlation = cor_matrix[high_cor]
+    )
+    print("高度相关的变量对 (|r| > 0.7):")
+    print(high_cor_pairs)
+  } else {
+    print("未发现高度相关的变量对 (|r| > 0.7)")
+  }
+}
+
+# 准备进行Cox模型的变量, Model 2
+predictor_vars <- metadata$variable_name[metadata$covars_m2 == 1]
+
+# 创建Cox回归的公式
+cox_formula <- as.formula(paste("Surv(aval, cnsr) ~", paste(predictor_vars, collapse = " + ")))
+
+# 定义一个函数，计算VIF并处理高VIF变量
+check_and_handle_multicollinearity <- function(data, formula, threshold = 5) {
+  # 提取预测变量
+  formula_terms <- terms(formula)
+  predictors <- attr(formula_terms, "term.labels")
+  
+  # 检查预测变量是否存在
+  missing_vars <- setdiff(predictors, names(data))
+  if (length(missing_vars) > 0) {
+    stop("以下预测变量在数据中不存在: ", paste(missing_vars, collapse = ", "))
+  }
+  
+  # 创建模型数据（仅包含预测变量）
+  model_data <- data[, predictors, drop = FALSE]
+  
+  # 检查是否有有效数据
+  if (nrow(model_data) == 0) {
+    stop("模型数据为空，无法计算VIF")
+  }
+  
+  # 将字符变量转换为因子
+  cat_vars <- names(model_data)[sapply(model_data, function(x) is.character(x) | is.factor(x))]
+  for (var in cat_vars) {
+    model_data[[var]] <- as.factor(model_data[[var]])
+  }
+  
+  # 创建伪因变量（VIF计算需要）
+  model_data$pseudo_y <- rnorm(nrow(model_data))
+  
+  # 尝试拟合线性模型
+  lm_full <- tryCatch({
+    lm_formula <- as.formula(paste("pseudo_y ~", paste(predictors, collapse = " + ")))
+    lm(lm_formula, data = model_data)
+  }, error = function(e) {
+    cat("创建完整线性模型时出错:", e$message, "\n")
+    cat("使用的预测变量:", paste(predictors, collapse = ", "), "\n")
+    cat("数据预览:\n")
+    print(head(model_data))
+    return(NULL)
+  })
+  
+  if (is.null(lm_full)) {
+    stop("无法创建完整线性模型进行VIF计算")
+  }
+  
+  # 计算VIF
+  vif_results <- tryCatch({
+    vif_matrix <- car::vif(lm_full)
+    
+    # 处理不同类型的结果
+    if (is.matrix(vif_matrix)) {
+      # 有分类变量的情况
+      vif_values <- sapply(rownames(vif_matrix), function(var) {
+        if (var %in% cat_vars) {
+          # 分类变量：GVIF^(1/(2*Df))
+          vif_matrix[var, "GVIF"]^(1/(2*vif_matrix[var, "Df"]))
+        } else {
+          # 连续变量：直接使用GVIF
+          vif_matrix[var, "GVIF"]
+        }
+      })
+    } else {
+      # 没有分类变量的情况
+      vif_values <- vif_matrix
+    }
+    vif_values
+  }, error = function(e) {
+    cat("使用car::vif计算VIF时出错:", e$message, "\n")
+    return(NULL)
+  })
+  
+  if (is.null(vif_results)) {
+    stop("VIF计算失败")
+  }
+  
+  # 创建VIF数据框
+  vif_df <- data.frame(
+    Variable = names(vif_results),
+    VIF = as.numeric(vif_results)
+  )
+  vif_df <- vif_df[order(-vif_df$VIF), ]
+  
+  # 输出VIF值
+  cat("\n==== 变量膨胀因子 (VIF) 值 ====\n")
+  print(vif_df)
+  
+  # 可视化VIF值（仅当有结果时）
+  if (nrow(vif_df) > 0) {
+    p <- ggplot(vif_df, aes(x = reorder(Variable, VIF), y = VIF)) +
+      geom_bar(stat = "identity", fill = "#3498db") +
+      geom_hline(yintercept = threshold, linetype = "dashed", color = "red") +
+      coord_flip() +
+      labs(title = "变量膨胀因子 (VIF)",
+           x = "变量",
+           y = "VIF值") +
+      theme_minimal()
+    print(p)
+  } else {
+    cat("没有可用的VIF值进行可视化\n")
+  }
+  
+  # 找出高VIF变量
+  high_vif_vars <- vif_df$Variable[which(vif_df$VIF > threshold)]
+  
+  if (length(high_vif_vars) > 0) {
+    cat("\n以下变量的VIF值超过", threshold, ":\n")
+    print(high_vif_vars)
+    return(list(high_vif = high_vif_vars, all_vif = vif_df))
+  } else {
+    cat("\n所有变量的VIF值均低于", threshold, "，无共线性问题。\n")
+    return(list(high_vif = character(0), all_vif = vif_df))
+  }
+}
+# 执行共线性检查
+multicollinearity_results <- check_and_handle_multicollinearity(data, cox_formula)
+
+# 处理共线性问题
+if (length(multicollinearity_results$high_vif) > 0) {
+  cat("\n处理共线性问题的方法：\n")
+  cat("1. 移除高度共线的变量\n")
+  cat("2. 合并相关变量为新变量\n")
+  cat("3. 使用正则化方法，如ridge回归或lasso回归\n")
+  cat("4. 使用主成分分析(PCA)降维\n\n")
+  
+  # 示例：移除VIF最高的变量
+  vars_to_remove <- multicollinearity_results$high_vif[1]  # 移除VIF最高的变量
+  cat("示例方法1: 移除变量:", vars_to_remove, "\n")
+  
+  # 更新预测变量列表
+  predictor_vars_updated <- predictor_vars[!predictor_vars %in% vars_to_remove]
+  
+  # 更新公式
+  cox_formula_updated <- as.formula(paste("Surv(time, event) ~", paste(predictor_vars_updated, collapse = " + ")))
+  
+  # 重新检查共线性
+  cat("\n移除", vars_to_remove, "后重新检查共线性：\n")
+  multicollinearity_results_updated <- check_and_handle_multicollinearity(data, cox_formula_updated)
+  
+  # 更新Cox公式用于后续分析
+  cox_formula <- cox_formula_updated
+  predictor_vars <- predictor_vars_updated
+}
+```
+
+## PH假定检验
+
+```{r}
+# 安装并加载必要的包
+if(!require(survival)) install.packages("survival")
+if(!require(survminer)) install.packages("survminer")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(flextable)) install.packages("flextable")
+library(survival)
+library(survminer)
+library(dplyr)
+library(flextable)
+library(officer)
+# 读取数据（确保已经处理了共线性问题）
+# 读取数据testcd==ICU28D, HOSPXXD
+data <-tte %>% filter(testcd=="HOSPXXD") %>%
+  select(-all_of(c("Q1","Q2","Q3","subject_id","stay_id","hadm_id","total_number","total_deficit", "flab")))
+
+# 准备进行Cox模型的变量, Model 2
+predictor_vars <- metadata$variable_name[metadata$covars_m2 == 1]
+
+# 创建Cox回归的公式
+cox_formula <- as.formula(paste("Surv(aval, cnsr) ~", paste(predictor_vars, collapse = " + ")))
+
+# 拟合Cox模型
+cox_model <- coxph(cox_formula, data = data)
+
+# --------------------------------
+#  检查比例风险假定
+# --------------------------------
+
+ph_test <- cox.zph(cox_model)
+# print(ph_test)
+
+# 自动化生成检验报告
+valid_vars <- rownames(ph_test$table)[rownames(ph_test$table) != "GLOBAL"]
+ph_report <- data.frame(
+  Variable = c(valid_vars, "GLOBAL"),
+  Chisq = ph_test$table[, "chisq"],
+  df = ph_test$table[, "df"],
+  p_value = ph_test$table[, "p"],
+  Significance = ifelse(ph_test$table[, "p"] < 0.05, "Violation", "Pass")
+)
+
+print(ph_report)
+
+ft <- flextable(ph_report) %>%
+  set_header_labels(
+    chisq = "χ²", 
+    df = "df",
+    p = "p-value"
+  ) %>%
+  bg(part = "header", bg = "#1F4E79") %>%
+  set_table_properties(layout = "autofit") %>%
+  color(part = "header", color = "white")
+
+# 保存为Word/HTML格式
+save_as_docx(ft, path = "PH_Test_Results.docx")
+
+# # 原始可视化Schoenfeld残差
+# par(mfrow = c(2, 2))  # 设置2x2网格以显示多个图
+# for (i in 1:length(ph_test$table[, 1])) {
+#   plot(ph_test, var = i, main = paste("Schoenfeld Residuals for", names(ph_test$table[, 1])[i]))
+#   abline(h = 0, col = "red", lty = 2)
+# }
+# par(mfrow = c(1, 1))  # 重置为单个图
+# 
+# # 使用survminer包提供的更美观的图形
+# 但是得到警告信息:
+#   In regularize.values(x, y, ties, missing(ties), na.rm = na.rm) :
+#   折拢'x'成相互不同的值
+# ggcoxzph(ph_test,ties = "ordered")
+
+# --------------------------------
+#  改用ggplot绘图并保存为矢量图形
+# --------------------------------
+valid_vars <- setdiff(rownames(ph_test$table), "GLOBAL")
+
+# 创建图形列表（非ggcoxzph对象）
+plot_list <- lapply(valid_vars, function(var) {
+  
+  # 提取残差数据
+  resid_data <- data.frame(
+    time = ph_test$time,
+    resid = ph_test$y[, var],
+    smooth = lowess(ph_test$time, ph_test$y[, var])$y
+  )
+  
+  # 构建自定义ggplot对象
+  ggplot(resid_data, aes(x = time)) +
+    geom_point(aes(y = resid), alpha = 0.6, size = 2) +
+    geom_line(aes(y = smooth), color = "red", linewidth = 1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(
+      title = paste("Schoenfeld Residuals:", var),
+      subtitle = sprintf("χ² = %.2f (df=%d, p=%s)", 
+                         ph_test$table[var, "chisq"],
+                         ph_test$table[var, "df"],
+                         ifelse(ph_test$table[var, "p"] < 0.001, 
+                                "<0.001", 
+                                sprintf("%.3f", ph_test$table[var, "p"]))),
+      x = "Time", 
+      y = "Scaled Schoenfeld Residuals"
+    ) +
+    theme_minimal() +
+    theme(
+      plot.title = element_text(face = "bold", size = 14),
+      plot.subtitle = element_text(size = 11)
+    )
+})
+
+# 方法A：使用ggpubr（推荐）
+ph_grid <- ggpubr::ggarrange(plotlist = plot_list, 
+                             ncol = 2, nrow = ceiling(length(valid_vars)/2))
+
+# 方法B：使用gridExtra（替代方案）
+# ph_grid <- gridExtra::grid.arrange(grobs = plot_list, ncol = 2)
+
+# --------------------------------
+#  安全保存图形
+# --------------------------------
+ggsave("PH_Validation_Grid.svg", ph_grid,
+       width = 25, 
+       height = 10 * ceiling(length(valid_vars)/2),
+       units = "cm", dpi = 600)
+
+print(ph_grid)
+
+# --------------------------------
+#  检查全局测试结果
+# --------------------------------
+
+if (ph_test$table["GLOBAL", "p"] < 0.05) {
+  cat("\n全局测试显示比例风险假定不成立 (p =", ph_test$table["GLOBAL", "p"], ")\n")
+  
+  # 识别违反PH假定的变量
+  non_ph_vars <- names(ph_test$table[, "p"])[ph_test$table[, "p"] < 0.05]
+  non_ph_vars <- non_ph_vars[non_ph_vars != "GLOBAL"]
+  
+  if (length(non_ph_vars) > 0) {
+    cat("以下变量违反了比例风险假定：\n")
+    print(non_ph_vars)
+    
+    cat("\n处理违反PH假定的方法：\n")
+    cat("1. 分层Cox模型\n")
+    cat("2. 使用时间依赖型协变量\n")
+    cat("3. 使用扩展Cox模型\n")
+    cat("4. 考虑使用其他生存分析模型，如AFT模型\n\n")
+    
+    # 示例：分层Cox模型
+    if (length(non_ph_vars) == 1 && non_ph_vars %in% categorical_vars) {
+      cat("示例方法1：对变量", non_ph_vars, "进行分层\n")
+      
+      # 创建分层公式
+      strata_var <- non_ph_vars
+      other_vars <- predictor_vars[!predictor_vars %in% strata_var]
+      
+      # 使用strata()函数创建分层Cox模型
+      strata_formula <- as.formula(
+        paste("Surv(time, event) ~", 
+              paste(other_vars, collapse = " + "), 
+              "+ strata(", strata_var, ")")
+      )
+      
+      # 拟合分层Cox模型
+      stratified_cox_model <- coxph(strata_formula, data = data)
+      print(summary(stratified_cox_model))
+      
+      # 检查分层后的PH假定
+      ph_test_stratified <- cox.zph(stratified_cox_model)
+      print(ph_test_stratified)
+      
+      # 可视化残差
+      ggcoxzph(ph_test_stratified)
+      
+      # 更新Cox模型为分层模型
+      cox_model <- stratified_cox_model
+    } 
+    
+    # 示例：时间依赖型协变量
+    else {
+      cat("示例方法2：将", non_ph_vars[1], "作为时间依赖型协变量\n")
+      
+      # 创建带有时间交互项的公式
+      tt_var <- non_ph_vars[1]
+      other_vars <- predictor_vars[!predictor_vars %in% tt_var]
+      
+      tt_formula <- as.formula(
+        paste("Surv(time, event) ~", 
+              paste(other_vars, collapse = " + "), 
+              "+", tt_var,
+              "+ tt(", tt_var, ")")
+      )
+      
+      # 拟合带时间依赖型协变量的Cox模型
+      tt_cox_model <- coxph(tt_formula, data = data)
+      print(summary(tt_cox_model))
+      
+      # 更新Cox模型
+      cox_model <- tt_cox_model
+    }
+  }
+} else {
+  cat("\n全局测试显示比例风险假定成立 (p =", ph_test$table["GLOBAL", "p"], ")\n")
+  
+  # 仍然检查是否有单个变量不满足PH假定
+  non_ph_vars <- names(ph_test$table[, "p"])[ph_test$table[, "p"] < 0.05]
+  non_ph_vars <- non_ph_vars[non_ph_vars != "GLOBAL"]
+  
+  if (length(non_ph_vars) > 0) {
+    cat("但以下个别变量可能违反了比例风险假定：\n")
+    print(non_ph_vars)
+    cat("建议检查这些变量的Schoenfeld残差图并考虑处理方法\n")
+  }
+}
+```
+
+## **Cox比例风险模型（HR, P for Trend）**
+
+#### 使用survival包进行Cox比例风险回归分析，计算风险比和P for trend，并通过flextable和officer导出为Word格式。
+
+```{r}
+# 安装和加载必要的包
+if(!require(survival)) install.packages("survival")
+if(!require(survminer)) install.packages("survminer")
+if(!require(flextable)) install.packages("flextable")
+if(!require(officer)) install.packages("officer")
+if(!require(broom)) install.packages("broom")
+if(!require(dplyr)) install.packages("dplyr")
+library(survival)
+library(survminer)
+library(flextable)
+library(officer)
+library(broom)
+library(dplyr)
+
+# 全局P值格式化函数
+format_p_value <- function(p) {
+  if(is.na(p)) return(NA_character_)
+  if(p < 0.001) "< 0.001" else sprintf("%.3f", p)
+}
+
+# 重新定义提取函数
+extract_cox_results <- function(cox_model, is_continuous = FALSE) {
+  if(is.null(cox_model)) {
+    if(is_continuous) {
+      return(data.frame(
+        Exposure = "Continuous variable per 0.01 unit",
+        HR_CI = NA_character_,
+        P_Value = NA_character_
+      ))
+    } else {
+      return(data.frame(
+        Exposure = c("Q1", "Q2", "Q3", "Q4"),
+        HR_CI = c("Ref", NA_character_, NA_character_, NA_character_),
+        P_Value = c(NA_character_, NA_character_, NA_character_, NA_character_)
+      ))
+    }
+  }
+  
+  # 提取系数和置信区间
+  coefs <- exp(coef(cox_model))
+  conf_int <- exp(confint(cox_model))
+  
+  if(is_continuous) {
+    hr_ci <- sprintf("%.2f (%.2f, %.2f)", 
+                     coefs[1], conf_int[1, 1], conf_int[1, 2])
+    p_value <- summary(cox_model)$coefficients[1, "Pr(>|z|)"]
+    
+    data.frame(
+      Exposure = "Continuous variable per 0.01 unit",
+      HR_CI = hr_ci,
+      P_Value = format_p_value(p_value)
+    )
+  } else {
+    hr_ci <- rep(NA_character_, 4)
+    p_values <- rep(NA_character_, 4)
+    
+    hr_ci[1] <- "Ref"
+    
+    n_coefs <- length(coefs)
+    if(n_coefs > 0) {
+      for(i in 1:min(n_coefs, 3)) {
+        hr_ci[i+1] <- sprintf("%.2f (%.2f, %.2f)", 
+                              coefs[i], conf_int[i, 1], conf_int[i, 2])
+        p_values[i+1] <- format_p_value(summary(cox_model)$coefficients[i, "Pr(>|z|)"])
+      }
+    }
+    
+    data.frame(
+      Exposure = c("Q1", "Q2", "Q3", "Q4"),
+      HR_CI = hr_ci,
+      P_Value = p_values
+    )
+  }
+}
+
+# 主分析流程
+analyze_cox_models <- function() {
+  
+  # 定义需要分析的多个时间点
+  testcd_list <- c( "ICU28D","HOSPXXD")
+  
+  # 创建空结果表
+  results_table <- data.frame(
+    Exposure = character(),
+    Crude_HR_CI = character(),
+    Crude_P = character(),
+    Model1_HR_CI = character(),
+    Model1_P = character(),
+    Model2_HR_CI = character(),
+    Model2_P = character(),
+    stringsAsFactors = FALSE
+  )
+  
+  # 遍历每个时间点数据集
+  for (testcd in testcd_list) {
+    # 选择数据并合并 - 修复关键错误
+    tte_selected <- tte %>%
+      mutate(leveln=as.numeric(leveln))%>% #注意这个变量需要为数值连续型，可能前面因子化影响到了
+      filter(testcd == !!testcd)  # 使用!!取消引用
+    
+    # 如果数据集为空，跳过当前时间点
+    if(nrow(tte_selected) == 0) {
+      warning(paste("No data available for testcd:", testcd))
+      next
+    }
+  
+    # 设置协变量
+    covariates_m1 <- metadata$variable_name[metadata$covars_m1 == 1]
+    covariates_m2 <- metadata$variable_name[metadata$covars_m2 == 1]
+    
+    
+    # 1. 连续变量模型 ----
+    cox_crude_cont <- tryCatch({
+      coxph(Surv(aval, cnsr) ~ flab100, data = tte_selected)
+    }, error = function(e) NULL)
+    
+    cox_m1_cont <- tryCatch({
+      if(length(covariates_m1) > 0) {
+        cox_formula <- as.formula(paste("Surv(aval, cnsr) ~ flab100 +", 
+                                        paste(covariates_m1, collapse = "+")))
+      } else {
+        cox_formula <- as.formula("Surv(aval, cnsr) ~ flab100")
+      }
+      coxph(cox_formula, data = tte_selected)
+    }, error = function(e) NULL)
+    
+    cox_m2_cont <- tryCatch({
+      if(length(covariates_m2) > 0) {
+        cox_formula <- as.formula(paste("Surv(aval, cnsr) ~ flab100 +", 
+                                        paste(covariates_m2, collapse = "+")))
+      } else {
+        cox_formula <- as.formula("Surv(aval, cnsr) ~ flab100")
+      }
+      coxph(cox_formula, data = tte_selected)
+    }, error = function(e) NULL)
+    
+    # 2. 分类变量模型 ----
+    cox_crude_cat <- tryCatch({
+      coxph(Surv(aval, cnsr) ~ level, data = tte_selected)
+    }, error = function(e) NULL)
+    
+    cox_m1_cat <- tryCatch({
+      if(length(covariates_m1) > 0) {
+        cox_formula <- as.formula(paste("Surv(aval, cnsr) ~ level +", 
+                                        paste(covariates_m1, collapse = "+")))
+      } else {
+        cox_formula <- as.formula("Surv(aval, cnsr) ~ level")
+      }
+      coxph(cox_formula, data = tte_selected)
+    }, error = function(e) NULL)
+    
+    cox_m2_cat <- tryCatch({
+      if(length(covariates_m2) > 0) {
+        cox_formula <- as.formula(paste("Surv(aval, cnsr) ~ level +", 
+                                        paste(covariates_m2, collapse = "+")))
+      } else {
+        cox_formula <- as.formula("Surv(aval, cnsr) ~ level")
+      }
+      coxph(cox_formula, data = tte_selected)
+    }, error = function(e) NULL)
+    
+    # 3. 趋势检验 ----
+    p_trend0 <- tryCatch({
+      cox_trend <- coxph(Surv(aval, cnsr) ~ leveln, data = tte_selected)
+      summary(cox_trend)$coefficients["leveln", "Pr(>|z|)"]
+    }, error = function(e) NA)
+    
+    p_trend1 <- tryCatch({
+      if(length(covariates_m1) > 0) {
+        trend_formula <- as.formula(paste("Surv(aval, cnsr) ~ leveln +", 
+                                          paste(covariates_m1, collapse = "+")))
+      } else {
+        trend_formula <- as.formula("Surv(aval, cnsr) ~ leveln")
+      }
+      cox_trend <- coxph(trend_formula, data = tte_selected)
+      summary(cox_trend)$coefficients["leveln", "Pr(>|z|)"]
+    }, error = function(e) NA)
+    
+    p_trend2 <- tryCatch({
+      if(length(covariates_m2) > 0) {
+        trend_formula <- as.formula(paste("Surv(aval, cnsr) ~ leveln +", 
+                                          paste(covariates_m2, collapse = "+")))
+      } else {
+        trend_formula <- as.formula("Surv(aval, cnsr) ~ leveln")
+      }
+      cox_trend <- coxph(trend_formula, data = tte_selected)
+      summary(cox_trend)$coefficients["leveln", "Pr(>|z|)"]
+    }, error = function(e) NA)
+    
+    # 提取所有结果
+    cont_crude <- extract_cox_results(cox_crude_cont, TRUE)
+    cont_m1 <- extract_cox_results(cox_m1_cont, TRUE)
+    cont_m2 <- extract_cox_results(cox_m2_cont, TRUE)
+    
+    cat_crude <- extract_cox_results(cox_crude_cat)
+    cat_m1 <- extract_cox_results(cox_m1_cat)
+    cat_m2 <- extract_cox_results(cox_m2_cat)
+    
+    # 创建当前时间点的结果表
+    current_results <- data.frame(
+      Exposure = c(cont_crude$Exposure, cat_crude$Exposure),
+      Crude_HR_CI = c(cont_crude$HR_CI, cat_crude$HR_CI),
+      Crude_P = c(cont_crude$P_Value, cat_crude$P_Value),
+      Model1_HR_CI = c(cont_m1$HR_CI, cat_m1$HR_CI),
+      Model1_P = c(cont_m1$P_Value, cat_m1$P_Value),
+      Model2_HR_CI = c(cont_m2$HR_CI, cat_m2$HR_CI),
+      Model2_P = c(cont_m2$P_Value, cat_m2$P_Value)
+    )
+    
+    # 添加趋势检验行
+    trend_results <- data.frame(
+      Exposure = "P for trend",
+      Crude_HR_CI = NA_character_,
+      Crude_P = format_p_value(p_trend0),
+      Model1_HR_CI = NA_character_,
+      Model1_P = format_p_value(p_trend1),
+      Model2_HR_CI = NA_character_,
+      Model2_P = format_p_value(p_trend2)
+    )
+    
+    current_results <- rbind(current_results, trend_results)
+    
+    # 添加自定义标题行
+    title_text <- ifelse(grepl("^HOSP", testcd),
+                         "In-hospital mortality",
+                         paste0(gsub("ICU([0-9]+)D", "\\1", testcd), 
+                                "-day all-cause mortality"))
+    
+    title_row <- data.frame(
+      Exposure = title_text,
+      Crude_HR_CI = "Crude model",
+      Crude_P = "",
+      Model1_HR_CI = "Model 1",
+      Model1_P = "",
+      Model2_HR_CI = "Model 2",
+      Model2_P = ""
+    )
+    
+    # 添加到总结果表
+    results_table <- rbind(
+      results_table,
+      title_row,
+      current_results,
+      data.frame(Exposure = "", 
+                 Crude_HR_CI = "",
+                 Crude_P = "",
+                 Model1_HR_CI = "",
+                 Model1_P = "",
+                 Model2_HR_CI = "",
+                 Model2_P = "")
+    )
+  }
+  
+  return(results_table)
+}
+
+# 执行分析
+results_table <- analyze_cox_models()
+
+# 创建并格式化表格
+create_cox_table <- function(results) {
+  # 移除最后的空行
+  results <- results[results$Exposure != "", ]
+  
+  ft <- flextable(results) %>%
+    # 设置表格标题
+    set_caption(caption = "Table 3 Cox proportional hazard models for in-hospital and 28-Day ICU mortality", style = "Table Caption") %>% 
+    # 2025/06/14 之前可以运行，这次运行失败
+    #font(fontname = "Times New Roman", part = "all") %>%  # 学术字体
+    # 基本样式
+    theme_booktabs() %>%
+    #2025/06/14 之前可以运行，这次运行失败
+    #font(fontname = "Times New Roman", part = "all") %>%  # 学术字体
+    fontsize(size = 10, part = "all") %>%      # 统一字号
+    align(align = "center", part = "all") %>%
+    align(j = 1, align = "left") %>%
+    set_table_properties(layout = "autofit") %>%
+    # 设置列名
+    set_header_labels(
+      Exposure = "Exposure",
+      Crude_HR_CI = "HR (95% CI)",
+      Crude_P = "P-value",
+      Model1_HR_CI = "HR (95% CI)",
+      Model1_P = "P-value",
+      Model2_HR_CI = "HR (95% CI)",
+      Model2_P = "P-value"
+    ) %>%
+    # 添加模型名称行
+    add_header_row(values = c("", "Crude Model", "Model 1", "Model 2"),
+                   colwidths = c(1, 2, 2, 2)) %>%
+    # 设置页眉格式
+    bold(part = "header") %>%
+    
+    # 自动调整列宽
+    autofit()
+  
+  # 标识标题行和趋势行
+  title_rows <- which(grepl("mortality", results$Exposure))
+  trend_rows <- which(results$Exposure == "P for trend")
+  
+  # 逐个处理标题行合并
+  for (row in title_rows) {
+    ft <- merge_at(ft, i = row, j = 1:7)
+  }
+  
+  # 设置格式
+  ft <- ft %>%
+    
+    bold(i = title_rows) %>%
+    italic(i = trend_rows) %>%
+    bold(i = trend_rows)
+  
+  return(ft)
+}
+
+# 创建表格
+cox_table <- create_cox_table(results_table)
+
+# 保存为Word文档
+save_as_docx(cox_table, 
+             path = "Table 3.docx", 
+             pr_section = prop_section(page_size = page_size(orient = "landscape")))
+
+# 显示表格
+cox_table
+
+```
+
+## **Kaplan-Meier生存曲线（jpg、svg、tif格式）**
+
+#### 使用survival和survminer包创建高质量的Kaplan-Meier生存曲线，并以多种格式保存。
+
+```{r}
+# 加载必要包
+library(survival)
+library(survminer)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(gridExtra)
+
+# 定义绘图函数（解决所有问题）
+generate_km_plots <- function(tte_data, testcd) {
+  local_data <- as.data.frame(tte_data)
+  # 数据准备（使用小写level）
+  plot_data <- local_data %>%
+    filter(testcd == !!testcd) %>%
+    mutate(level = factor(level, levels = c("Q1", "Q2", "Q3", "Q4")))  # 变量名改为小写
+  # 检查数据
+  if(nrow(plot_data) == 0) {
+    stop(paste("没有找到", testcd, "的数据"))
+  }
+  # 创建生存对象
+  surv_obj <- Surv(time = plot_data$aval, event = plot_data$cnsr)
+  
+  # 智能标题生成
+  title <- ifelse(str_detect(testcd, "HOSP"), "In-hospital mortality",
+                  ifelse(str_detect(testcd, "ICU"), 
+                         paste0(str_extract(testcd, "\\d+"), "-day all-cause mortality"),
+                         paste(testcd, "Mortality")))
+  km_fit <- with(plot_data, survfit(Surv(aval, cnsr) ~ level))
+  # 拟合KM模型
+  # km_fit <- survfit(surv_obj ~ level, data = plot_data)  # 使用level分组
+  
+  # 计算log-rank检验p值
+  # pval <- surv_pvalue(km_fit)$pval
+  surv_diff <- survdiff(Surv(aval, cnsr) ~ level, data = plot_data)
+  pval <- surv_diff$pval
+  pval_label <- ifelse(pval < 0.0001, "p < 0.0001", paste("p =", round(pval, 4)))
+  # SCI期刊标准配色
+  sci_palette <- c("#1F77B4", "#FF7F0E", "#2CA02C", "#D62728")  # 蓝、橙、绿、红
+  
+  # 自动计算时间间隔
+  max_time <- max(plot_data$aval, na.rm = TRUE)
+  time_breaks <- pretty(seq(0, max_time, length.out = 8))
+  break_step <- if(length(time_breaks) > 1) time_breaks[2] - time_breaks[1] else max_time/5
+  
+  # 创建基础图形（解决所有警告）
+  km_plot <- ggsurvplot(
+    km_fit,
+    data = plot_data,
+    conf.int = TRUE,
+    risk.table = TRUE,
+    legend.title = "FI-Lab",
+    legend.labs = c("Q1", "Q2", "Q3", "Q4"),
+    palette = sci_palette,
+    ggtheme = theme_bw(base_size = 12),
+    title = title,
+    xlab = "Time (days)",
+    ylab = "Survival Probability",
+    break.time.by = break_step,  # 直接设置间隔解决scale警告
+    risk.table.height = 0.25,
+    pval = pval_label,
+    pval.coord = c(0, 0.1),
+    censor = TRUE,
+    censor.shape = 3,
+    censor.size = 2.5,
+    risk.table.col = "strata",
+    risk.table.y.text = TRUE,  # 显示分组标签
+    risk.table.y.text.col = TRUE,  # 文本颜色与组别一致
+    tables.theme = theme_cleantable(),
+    font.title = c(14, "bold", "black"),
+    font.x = c(12, "plain", "black"),
+    font.y = c(12, "plain", "black"),
+    font.legend = c(11, "plain", "black"),
+    font.tickslab = c(10, "plain", "black"),
+    legend = "top"  # 图例置于顶部
+  )
+  
+  # 高级优化
+  km_plot$plot <- km_plot$plot +
+    theme(
+      legend.position = "top",
+      legend.direction = "horizontal",
+      legend.box.spacing = unit(0.2, "cm"),
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+      panel.grid.minor = element_blank(),
+      panel.border = element_rect(color = "black", fill = NA, linewidth = 0.5)
+    ) +
+    guides(color = guide_legend(nrow = 1))
+  
+  # 优化风险表（显示分组标签）
+  km_plot$table <- km_plot$table +
+    labs(y = NULL) +  # 添加标签
+    theme(
+      axis.title.x = element_blank(),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      plot.margin = margin(t = 5, b = 5),
+      axis.title.y = element_text(size = 10, face = "bold")  # 标签样式
+    )
+  
+  # 组合图形
+  combined_plot <- arrange_ggsurvplots(
+    list(km_plot),
+    print = FALSE,
+    ncol = 1,
+    nrow = 1,
+    heights = c(0.70, 0.30)
+  )
+  
+  return(combined_plot)
+}
+
+# 输出函数（增加JPG和SVG格式）
+save_km_plots <- function(plot_obj, testcd) {
+  filename_base <- paste0("KM_plots/KM-", testcd)
+  
+  # 多种格式输出
+  ggsave(paste0(filename_base, ".png"), plot_obj, width = 8.5, height = 7, dpi = 300)
+  ggsave(paste0(filename_base, ".tif"), plot_obj, width = 8.5, height = 7, dpi = 300, compression = "lzw")
+  ggsave(paste0(filename_base, ".jpg"), plot_obj, width = 8.5, height = 7, dpi = 300)  # 新增JPG
+  ggsave(paste0(filename_base, ".svg"), plot_obj, width = 8.5, height = 7, dpi = 300)  # 新增SVG
+}
+
+# 主执行函数
+create_all_km_plots <- function(tte_data) {
+  testcd_list <- unique(tte_data$testcd)
+  
+  for (testcd in testcd_list) {
+    tryCatch({
+      km_plot <- generate_km_plots(tte_data, testcd)
+      save_km_plots(km_plot, testcd)
+      message(paste("成功创建", testcd, "的SCI标准KM曲线图"))
+    }, error = function(e) {
+      message(paste("创建", testcd, "KM曲线时出错:", e$message))
+    })
+  }
+}
+
+# 执行函数
+tte_xxdays<-tte %>%
+  filter(testcd  %in% c("ICU28D" , "HOSPXXD"))
+# 执行函数（使用您的数据集）
+create_all_km_plots(tte_xxdays)
+
+
+
+```
+
+## **限制性立方样条曲线（RCS）**
+
+### RCS Knots 选择依据knot 3-7的AIC比较：结果显示是7，但是AIC和4差别很小，仍然选用4？
+
+```{r}
+# Load required packages
+library(survival)
+library(rms)
+library(dplyr)
+library(officer)
+library(flextable)
+library(purrr)
+
+# Function to calculate optimal knots using AIC
+calculate_optimal_knots <- function(tte_data, testcd, covariates = NULL, knot_range = 3:7) {
+  # Prepare data
+  plot_data <- tte_data %>%
+    dplyr::filter(testcd == !!testcd) %>%
+    dplyr::select(-any_of(c("Q1", "Q2", "Q3", "Q4"))) %>%
+    dplyr::mutate(flab100 = as.numeric(flab100)) %>% 
+    dplyr::filter(!is.na(flab100))
+  
+  # Check variability
+  if (length(unique(plot_data$flab100)) < 2 || 
+      sd(plot_data$flab100, na.rm = TRUE) < .Machine$double.eps^0.5) {
+    stop("Insufficient variability in flab100 [testcd: ", testcd, "]")
+  }
+  
+  # Handle covariates
+  if (!is.null(covariates)) {
+    existing_covars <- covariates[covariates %in% names(plot_data)]
+    plot_data <- plot_data %>%
+      select(all_of(c("aval", "cnsr", "flab100", existing_covars))) %>%
+      na.omit()
+  }
+  
+  # Sample size checks
+  if (nrow(plot_data) < 30) warning("Small sample size (n=", nrow(plot_data), ")")
+  if (sum(plot_data$cnsr == 1) < 5) stop("Insufficient events (<5)")
+  
+  # Create datadist object BEFORE model fitting (fixes the error)
+  dd <- datadist(plot_data)
+  options(datadist = dd)#这里之前因为用了"dd"导致了报错，注意不带引号，是对象不是字符
+  
+  # Create survival object
+  surv_obj <- Surv(time = plot_data$aval, event = plot_data$cnsr)
+  
+  # Initialize results storage
+  results <- data.frame()
+  models <- list()
+  
+  # Loop through knot range
+  for (k in knot_range) {
+    # Build formula
+    if (is.null(covariates)) {
+      formula_str <- "surv_obj ~ rcs(flab100, k)"
+    } else {
+      covar_formula <- paste(existing_covars, collapse = " + ")
+      formula_str <- paste("surv_obj ~ rcs(flab100, k) +", covar_formula)
+    }
+    
+    formula <- as.formula(formula_str)
+    
+    # Fit model
+    fit <- tryCatch(
+      {
+        cph(formula, data = plot_data, x = TRUE, y = TRUE)
+      },
+      error = function(e) {
+        warning("Fit failed for knots ", k, ": ", e$message)
+        NULL
+      }
+    )
+    
+    # Calculate statistics
+    if (!is.null(fit)) {
+      loglik <- fit$loglik[2]
+      df <- length(fit$coefficients)
+      aic_val <- -2 * loglik + 2 * df
+      bic_val <- -2 * loglik + log(nrow(plot_data)) * df
+      
+      # Extract ANOVA results
+      anova_res <- anova(fit)
+      overall_p <- ifelse("flab100" %in% rownames(anova_res), 
+                          anova_res["flab100", "P"], NA)
+      nonlinear_p <- ifelse("Nonlinear" %in% rownames(anova_res), 
+                            anova_res["Nonlinear", "P"], NA)
+      
+      # Store results
+      row <- data.frame(
+        Knots = k,
+        AIC = round(aic_val, 2),
+        BIC = round(bic_val, 2),
+        LogLikelihood = round(loglik, 2),
+        DF = df,
+        Overall_P = format_p(overall_p),
+        Nonlinear_P = format_p(nonlinear_p),
+        Converged = "Yes"
+      )
+      
+      results <- rbind(results, row)
+      models[[as.character(k)]] <- fit
+    } else {
+      row <- data.frame(
+        Knots = k,
+        AIC = NA,
+        BIC = NA,
+        LogLikelihood = NA,
+        DF = NA,
+        Overall_P = NA,
+        Nonlinear_P = NA,
+        Converged = "No"
+      )
+      results <- rbind(results, row)
+    }
+  }
+  
+  # Identify best knot
+  best_row <- which.min(results$AIC)
+  best_knot <- ifelse(length(best_row) > 0, results$Knots[best_row], NA)
+  
+  return(list(
+    aic_table = results,
+    best_knot = best_knot,
+    models = models
+  ))
+}
+
+# Format p-values
+format_p <- function(p) {
+  if (is.na(p)) return("NA")
+  if (p < 0.001) "p < 0.001"
+  else if (p < 0.01) "p < 0.01"
+  else if (p < 0.05) "p < 0.05"
+  else paste0("p = ", round(p, 3))
+}
+
+# Save AIC results to Word
+save_aic_results <- function(aic_results, testcd, output_dir = "RCS_Results") {
+  # Create output directory
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  # Create Word document
+  doc <- read_docx()
+  
+  # Add title
+  title <- paste("AIC Knot Selection Report -", testcd)
+  doc <- body_add_par(doc, title, style = "heading 1")
+  doc <- body_add_par(doc, paste("Generated:", format(Sys.Date(), "%Y-%m-%d")), style = "Normal")
+  doc <- body_add_par(doc, " ", style = "Normal")  # Blank line
+  
+  # Add summary
+  doc <- body_add_par(doc, "Analysis Summary", style = "heading 2")
+  
+  summary_text <- paste0(
+    "Test Code: ", testcd, "\n",
+    "Sample Size: ", aic_results$sample_size, "\n",
+    "Event Count: ", aic_results$event_count, "\n",
+    "Optimal Knots: ", ifelse(is.na(aic_results$best_knot), "Not determined", aic_results$best_knot)
+  )
+  
+  doc <- body_add_par(doc, summary_text, style = "Normal")
+  doc <- body_add_par(doc, " ", style = "Normal")  # Blank line
+  
+  # Add statistics table
+  doc <- body_add_par(doc, "Knot Comparison Statistics", style = "heading 2")
+  
+  # Format table
+  ft <- flextable(aic_results$aic_table) %>%
+    theme_zebra() %>%
+    autofit() %>%
+    set_caption(paste(testcd, "- Knot Comparison"))
+  
+  # Highlight best knot row
+  if (!is.na(aic_results$best_knot)) {
+    best_row <- which(aic_results$aic_table$Knots == aic_results$best_knot)
+    ft <- bg(ft, i = best_row, bg = "#FFF2CC")
+  }
+  
+  # Add column labels
+  ft <- set_header_labels(ft,
+                          Knots = "Knots",
+                          AIC = "AIC",
+                          BIC = "BIC",
+                          LogLikelihood = "Log Likelihood",
+                          DF = "Degrees of Freedom",
+                          Overall_P = "Overall P-value",
+                          Nonlinear_P = "Nonlinear P-value",
+                          Converged = "Convergence Status")
+  
+  doc <- body_add_flextable(doc, value = ft)
+  
+  # Add explanations
+  doc <- body_add_par(doc, "Metric Explanations", style = "heading 3")
+  
+  explanations <- c(
+    "• AIC (Akaike Information Criterion): Lower values indicate better model fit",
+    "• BIC (Bayesian Information Criterion): Similar to AIC with stronger penalty for complexity",
+    "• Log Likelihood: Measure of model fit (higher absolute values indicate better fit)",
+    "• Degrees of Freedom: Number of parameters in the model",
+    "• Overall P-value: Significance test for the entire variable",
+    "• Nonlinear P-value: Test for nonlinear relationship",
+    "• Highlighted row indicates optimal knot selection based on AIC"
+  )
+  
+  for (exp in explanations) {
+    doc <- body_add_par(doc, exp, style = "Normal")
+  }
+  
+  # Save Word document
+  word_file <- file.path(output_dir, paste0("AIC_Selection_", testcd, ".docx"))
+  print(doc, target = word_file)
+  message("AIC results saved to: ", word_file)
+}
+
+# Main execution function
+run_aic_analysis <- function(tte_data, covariates = NULL, output_dir = "RCS_Results") {
+  testcd_list <- unique(tte_data$testcd)
+  all_results <- list()
+  
+  for (testcd in testcd_list) {
+    message("\n===== Analyzing: ", testcd, " =====")
+    
+    tryCatch({
+      # Calculate sample size and event count
+      plot_data <- tte_data %>%
+        dplyr::filter(testcd == !!testcd) %>%
+        dplyr::mutate(flab100 = as.numeric(flab100)) %>% 
+        dplyr::filter(!is.na(flab100))
+      
+      sample_size <- nrow(plot_data)
+      event_count <- sum(plot_data$cnsr == 1, na.rm = TRUE)
+      
+      # Perform AIC analysis
+      aic_result <- calculate_optimal_knots(tte_data, testcd, covariates)
+      
+      # Add sample information
+      aic_result$sample_size <- sample_size
+      aic_result$event_count <- event_count
+      
+      # Save results
+      save_aic_results(aic_result, testcd, output_dir)
+      
+      # Record results
+      all_results[[testcd]] <- aic_result
+      
+      # Print summary
+      message("Sample size: ", sample_size)
+      message("Event count: ", event_count)
+      message("Optimal knots: ", ifelse(is.na(aic_result$best_knot), "Not determined", aic_result$best_knot))
+      message("AIC results saved")
+      
+    }, error = function(e) {
+      message("❌ Analysis failed: ", e$message)
+      all_results[[testcd]] <<- paste("Failed:", e$message)
+    })
+  }
+  
+  return(all_results)
+}
+
+# ====================== Usage Example ====================== #
+tte_xxdays <- tte %>%
+  filter(testcd %in% c("ICU28D", "HOSPXXD"))  # 示例多个testcd
+covariates_m2 <- metadata$variable_name[metadata$covars_m2 == 1]
+
+# 步骤2: 执行AIC分析
+aic_results <- run_aic_analysis(
+  tte_data = tte_xxdays,
+  covariates = covariates_m2,
+  output_dir = "RCS_Results"
+)
+```
+
+### 使用rms包实现限制性立方样条（Restricted Cubic Splines）模型，以评估连续变量与结果间的非线性关系。这里的Knot点数用的是4
+
+```{r}
+# 加载必要包
+library(survival)
+library(rms)
+library(ggplot2)
+library(dplyr)
+library(stringr)
+library(gridExtra)
+library(survminer)
+library(scales)  # 用于透明色处理
+
+# RCS曲线生成函数（优化版）
+generate_rcs_plots <- function(tte_data, testcd, covariates = NULL) {
+  
+  # 数据准备
+  plot_data <- tte_data %>%
+    filter(testcd == !!testcd) %>%
+    select(-any_of(c("Q1","Q2","Q3","Q4")))%>%
+    mutate(flab100 = as.numeric(flab100)) %>% 
+    filter(!is.na(flab100))
+  
+  # 变异度检查
+  if (length(unique(plot_data$flab100)) < 2 || 
+      sd(plot_data$flab100, na.rm = TRUE) < .Machine$double.eps^0.5) {
+    stop("变量flab100缺乏变异度（所有值相同或接近），无法进行RCS分析 [testcd: ", testcd, "]")
+  }
+  
+  # 如果有协变量，检查并处理缺失值
+  if (!is.null(covariates)) {
+    # 确保协变量存在
+    existing_covars <- covariates[covariates %in% names(plot_data)]
+    missing_covars <- setdiff(covariates, existing_covars)
+    
+    if (length(missing_covars) > 0) {
+      warning("缺少协变量: ", paste(missing_covars, collapse = ", "), 
+              " [testcd: ", testcd, "]")
+    }
+    
+    # 将字符型/逻辑型协变量转换为因子
+    # for (covar in existing_covars) {
+    #   if (is.character(plot_data[[covar]]) {
+    #     plot_data[[covar]] <- factor(plot_data[[covar]])
+    #   } else if (is.logical(plot_data[[covar]])) {
+    #     plot_data[[covar]] <- factor(plot_data[[covar]], levels = c(TRUE, FALSE))
+    #   }
+    # }
+    
+    # 移除协变量缺失值
+    plot_data <- plot_data %>%
+      select(all_of(c("aval", "cnsr", "flab100", existing_covars))) %>%
+      na.omit()
+  }
+  
+  # 样本量检查
+  if (nrow(plot_data) < 50) {
+    warning("样本量较小(n=", nrow(plot_data), ")，结果可能不稳定 [testcd: ", testcd, "]")
+  }
+  
+  if (sum(plot_data$cnsr == 1) < 10) {
+    stop("事件数量不足(<10)，无法进行可靠分析 [testcd: ", testcd, "]")
+  }
+  
+  # 智能标题生成
+  title <- case_when(
+    str_detect(testcd, "HOSP") ~ "In-hospital mortality",
+    str_detect(testcd, "ICU") ~ {
+      days <- str_extract(testcd, "\\d+")
+      paste0(days, "-day all-cause mortality")
+    },
+    TRUE ~ paste(testcd, "Mortality")
+  )
+  
+  # 设置参考点（中位数）
+  ref_point <- median(plot_data$flab100, na.rm = TRUE)
+  
+  # 初始化rms环境
+  dd <- datadist(plot_data)
+  options(datadist = dd)#这里之前因为用了"dd"导致了报错，注意不带引号，是对象不是字符
+  
+  # 构建生存对象
+  surv_obj <- Surv(time = plot_data$aval, event = plot_data$cnsr)
+  
+  # 构建模型公式 - 修复警告问题
+  if (is.null(covariates)) {
+    formula <- surv_obj ~ rcs(flab100, 4)
+    model_type <- "Univariate"
+  } else {
+    # 过滤存在的协变量
+    existing_covars <- covariates[covariates %in% names(plot_data)]
+    
+    if (length(existing_covars) == 0) {
+      formula <- surv_obj ~ rcs(flab100, 4)
+      model_type <- "Univariate (no valid covariates)"
+    } else {
+      # 修复公式构建方式，避免字符向量警告
+      covar_formula <- paste(existing_covars, collapse = " + ")
+      formula_str <- paste("surv_obj ~ rcs(flab100, 4) +", covar_formula)
+      formula <- as.formula(formula_str)  # 显式转换为公式对象
+      model_type <- paste("Adjusted for:", paste(existing_covars, collapse = ", "))
+    }
+  }
+  
+  # 拟合RCS模型
+  rcs_fit <- tryCatch(
+    {
+      cph(formula, data = plot_data, x = TRUE, y = TRUE)
+    },
+    error = function(e) {
+      stop("模型拟合失败: ", e$message, " [testcd: ", testcd, "]")
+    }
+  )
+  
+  # 提取P值 - 修复语法错误
+  extract_p_value <- function(anova_obj) {
+    results <- list(overall = NA, nonlinear = NA)
+    rownames_anova <- rownames(anova_obj)
+    
+    # 尝试提取整体P值
+    if ("flab100" %in% rownames_anova) {
+      results$overall <- anova_obj["flab100", "P"]
+    } else {
+      # 尝试匹配包含"flab100"的行
+      idx <- grep("flab100", rownames_anova, fixed = TRUE)
+      if (length(idx) > 0) {
+        results$overall <- anova_obj[idx[1], "P"]
+      }
+    }
+    
+    # 尝试提取非线性P值
+    if ("Nonlinear" %in% rownames_anova) {
+      results$nonlinear <- anova_obj["Nonlinear", "P"]
+    } else {
+      # 尝试匹配包含"Nonlinear"的行
+      idx <- grep("Nonlinear", rownames_anova, fixed = TRUE)
+      if (length(idx) > 0) {
+        results$nonlinear <- anova_obj[idx[1], "P"]
+      }
+    }
+    
+    results
+  }
+  
+  anova_test <- anova(rcs_fit)
+  p_values <- extract_p_value(anova_test)
+  
+  # 格式化P值标签
+  format_p <- function(p) {
+    if (is.na(p)) return("p = NA")
+    if (p < 0.001) {
+      "p < 0.001"
+    } else if (p < 0.01) {
+      "p < 0.01"
+    } else if (p < 0.05) {
+      "p < 0.05"
+    } else {
+      paste("p =", round(p, 3))
+    }
+  }
+  
+  p_label <- paste0(
+    "Overall: ", format_p(p_values$overall), 
+    "\nNon-linear: ", format_p(p_values$nonlinear)
+  )
+  
+  # 生成预测数据
+  pred_range <- range(plot_data$flab100, na.rm = TRUE)
+  pred_data <- data.frame(flab100 = seq(
+    pred_range[1],
+    pred_range[2],
+    length.out = 200
+  ))
+  
+  # 添加协变量中位数/众数（如果有多变量）
+  if (!is.null(covariates) && length(existing_covars) > 0) {
+    for (covar in existing_covars) {
+      if (is.numeric(plot_data[[covar]])) {
+        pred_data[[covar]] <- median(plot_data[[covar]], na.rm = TRUE)
+      } else if (is.factor(plot_data[[covar]])) {
+        # 因子变量取最常见水平并保持因子结构
+        tab <- table(plot_data[[covar]])
+        mode_value <- names(sort(tab, decreasing = TRUE))[1]
+        pred_data[[covar]] <- factor(mode_value, levels = levels(plot_data[[covar]]))
+      } else {
+        # 其他类型取最常见值
+        pred_data[[covar]] <- names(sort(table(plot_data[[covar]]), decreasing = TRUE))[1]
+      }
+    }
+  }
+  
+  # 计算预测值
+  pred <- Predict(
+    rcs_fit, 
+    flab100 = pred_data$flab100,
+    ref.zero = TRUE, 
+    fun = exp
+  )
+  
+  # ====== 高级配色方案（Nature期刊风格） ======
+  primary_color <- "#2E5A87"  # 深蓝色（主曲线）
+  ribbon_color <- alpha("#6C9BCF", 0.2)  # 半透明浅蓝色（置信区间）
+  ref_line_color <- "#D93B3B"  # 红色（参考线）
+  histogram_color <- alpha("#4D7EA8", 0.6)  # 半透明蓝色（直方图）
+  
+  # ====== 整合直方图到主图 ======
+  # 创建直方图数据（使用更可靠的layer_data函数）
+  hist_plot <- ggplot(plot_data, aes(x = flab100)) + 
+    geom_histogram(bins = 30, fill = histogram_color)
+  
+  hist_data <- layer_data(hist_plot)  # 更可靠的获取方式
+  
+  # 确保有x位置数据
+  if (!"x" %in% names(hist_data)) {
+    if (all(c("xmin", "xmax") %in% names(hist_data))) {
+      hist_data$x <- (hist_data$xmin + hist_data$xmax)/2
+    } else {
+      stop("无法确定直方图中心位置")
+    }
+  }
+  
+  # 计算宽度
+  if (all(c("xmin", "xmax") %in% names(hist_data))) {
+    hist_data$width <- hist_data$xmax - hist_data$xmin
+  } else {
+    # 估算宽度作为备选
+    unique_x <- unique(hist_data$x)
+    avg_width <- if (length(unique_x) > 1) mean(diff(sort(unique_x))) else 1
+    hist_data$width <- rep(avg_width, nrow(hist_data))
+  }
+  
+  # 缩放直方图高度（适配HR坐标轴）
+  y_max <- max(pred$upper, na.rm = TRUE)
+  
+  # 安全处理零计数情况
+  if (max(hist_data$count) == 0) {
+    hist_scale_factor <- 0
+  } else {
+    hist_scale_factor <- 0.2 * y_max / max(hist_data$count)
+  }
+  
+  hist_data$scaled_count <- hist_data$count * hist_scale_factor
+  
+  # ====== 创建主图 ======
+  rcs_plot <- ggplot() +
+    # 1. 添加直方图（底部）
+    geom_bar(
+      data = hist_data,
+      aes(x = x, y = scaled_count),
+      stat = "identity",
+      width = hist_data$width,  # 使用每列的宽度
+      fill = histogram_color,
+      color = NA
+    ) +
+    # 2. 添加HR参考线
+    geom_hline(yintercept = 1, linetype = "dashed", color = "gray50", linewidth = 0.6) +
+    # 3. 添加置信区间
+    geom_ribbon(
+      data = pred,
+      aes(x = flab100, ymin = lower, ymax = upper),
+      alpha = 0.2,
+      fill = primary_color
+    ) +
+    # 4. 添加主曲线
+    geom_line(
+      data = pred,
+      aes(x = flab100, y = yhat),
+      linewidth = 1.5,
+      color = primary_color
+    ) +
+    # 5. 添加参考线
+    geom_vline(
+      xintercept = ref_point,
+      linetype = "dashed",
+      color = ref_line_color,
+      linewidth = 0.5
+    ) +
+    # 6. 添加P值标签
+    annotate(
+      "text",
+      x = Inf, y = Inf,
+      label = p_label,
+      hjust = 1.1, vjust = 1.5,
+      size = 4.5,
+      fontface = "bold"
+    ) +
+    # 7. 添加模型类型标签
+    # annotate(
+    #   "text",
+    #   x = -Inf, y = Inf,
+    #   label = model_type,
+    #   hjust = -0.05, vjust = 1.5,
+    #   size = 4.0,
+    #   color = "gray30",
+    #   fontface = "italic"
+    # ) +
+    # 8. 添加中位数标签
+    # annotate(
+    #   "text",
+    #   x = ref_point,
+    #   y = 0,
+    #   label = paste0("Median: ", round(ref_point, 2)),
+    #   vjust = -0.5,
+    #   hjust = 0.5,
+    #   size = 4.0,
+    #   color = ref_line_color,
+    #   fontface = "bold"
+    # ) +
+    # 坐标轴和标签
+    labs(
+      title = title,
+      x = "FI-Lab",  # 修改为FI-Lab
+      y = "Hazard Ratio (95% CI)"
+    ) +
+    # 扩展Y轴底部空间以显示直方图
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.15))) +
+    # Nature期刊风格主题
+    theme_minimal(base_size = 14) +
+    theme(
+      plot.title = element_text(
+        hjust = 0.5,
+        face = "bold",
+        size = 16,
+        margin = margin(b = 15)
+      ),
+      panel.grid.minor = element_blank(),
+      panel.grid.major = element_line(color = "grey90", linewidth = 0.25),
+      panel.background = element_rect(fill = "white", color = NA),
+      plot.background = element_rect(fill = "white", color = NA),
+      axis.line = element_line(color = "black", linewidth = 0.5),
+      axis.title = element_text(face = "bold", size = 13),
+      axis.text = element_text(color = "black", size = 11),
+      plot.margin = margin(20, 20, 20, 20)
+    )
+  
+  return(rcs_plot)
+}
+
+# 图形保存函数
+save_rcs_plots <- function(plot_obj, testcd, output_dir = "results") {
+  # 创建输出目录
+  if (!dir.exists(output_dir)) {
+    dir.create(output_dir, recursive = TRUE)
+  }
+  
+  filename_base <- file.path(output_dir, paste0("RCS-", testcd))
+  
+  # 保存多种格式
+  ggsave(paste0(filename_base, ".png"), plot_obj, width = 9, height = 7, dpi = 300, bg = "white")
+  ggsave(paste0(filename_base, ".jpg"), plot_obj, width = 9, height = 7, dpi = 300, bg = "white")
+  ggsave(paste0(filename_base, ".svg"), plot_obj, width = 9, height = 7, bg = "white")
+  ggsave(paste0(filename_base, ".tif"), plot_obj, width = 9, height = 7, dpi = 300, compression = "lzw")
+  
+  message("保存图形: ", filename_base, ".[png|jpg|tif|.svg]")
+}
+
+# 主执行函数
+create_all_rcs_plots <- function(tte_data, covariates = NULL, output_dir = "results") {
+  testcd_list <- unique(tte_data$testcd)
+  
+  results <- list()
+  errors <- list()
+  
+  for (testcd in testcd_list) {
+    tryCatch({
+      message("\n===== 处理: ", testcd, " =====")
+      
+      start_time <- Sys.time()
+      rcs_plot <- generate_rcs_plots(tte_data, testcd, covariates)
+      save_rcs_plots(rcs_plot, testcd, output_dir)
+      
+      elapsed <- round(as.numeric(Sys.time() - start_time), 1)
+      message(paste0("✅ 成功创建 (耗时: ", elapsed, "s)"))
+      results[[testcd]] <- rcs_plot
+    }, error = function(e) {
+      msg <- paste("❌ 失败:", e$message)
+      message(msg)
+      errors[[testcd]] <<- msg
+    })
+  }
+  
+  # 生成报告
+  message("\n===== 处理完成 =====")
+  message("成功: ", length(results), "/", length(testcd_list))
+  message("失败: ", length(errors))
+  
+  if (length(errors) > 0) {
+    message("\n失败详情:")
+    for (testcd in names(errors)) {
+      message("- ", testcd, ": ", errors[[testcd]])
+    }
+  }
+  
+  invisible(list(success = results, errors = errors))
+}
+
+# 使用示例 ================================================================
+
+# 步骤1: 准备协变量（根据metadata）
+# 假设metadata是一个数据框，包含变量名和选择标志
+covariates_m2 <- metadata$variable_name[metadata$covars_m2 == 1]
+
+# 步骤2: 创建子集
+tte_xxdays <- tte %>%
+  filter(testcd %in% c("ICU28D", "HOSPXXD"))  # 示例多个testcd
+
+# 步骤3: 执行函数，使用model 2构建
+results <- create_all_rcs_plots(
+  tte_data = tte_xxdays,
+  covariates = covariates_m2,
+  output_dir = "RCS_Results"
+)
+```
+
+## **Forest Plot（森林图）**
+
+#### 使用forestplot包创建高质量的森林图，展示不同亚组的风险比和置信区间。
+
+### 1. 使用连续变量绘图：参考样式
+
+![](https://pmc.ncbi.nlm.nih.gov/articles/PMC11806754/figure/Fig4/)
+
+```{r}
+# 修复后的完整代码 - 添加P值列和多testcd输出
+if(!require(forestplot)) install.packages("forestplot")
+if(!require(survival)) install.packages("survival")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(tidyr)) install.packages("tidyr")
+library(forestplot)
+library(survival)
+library(dplyr)
+library(tidyr)
+
+# 定义要分析的testcd列表 - 按需修改
+testcd_list <- c("ICU28D", "HOSPXXD")  # 替换为您的三个testcd值
+
+# 遍历每个testcd生成森林图
+for (current_testcd in testcd_list) {
+  # 读取数据
+  # 筛选特定testcd
+  data <- tte %>% 
+    filter(testcd == current_testcd)  # 根据需求修改
+  
+  # 确保使用正确的协变量和亚组变量 - 根据您的实际设置
+  covariates_m2 <- metadata$variable_name[metadata$covars_m2 == 1]
+  subgroup_vars <- metadata$variable_name[metadata$subgroup == 1]
+  
+  # 确保时间和事件变量是数值型
+  data$time <- as.numeric(data$aval)
+  data$event <- as.numeric(data$cnsr)
+  
+  # 存储亚组分析结果
+  subgroup_results <- list()
+  interaction_p_values <- list()
+  
+  # 对每个亚组变量进行分析
+  for (var_name in subgroup_vars) {
+    # 获取变量类别
+    if (is.numeric(data[[var_name]])) {
+      # 数值变量转换为二分变量
+      median_val <- median(data[[var_name]], na.rm = TRUE)
+      var_categories <- c(paste0("≤", median_val), paste0(">", median_val))
+    } else {
+      var_categories <- sort(unique(na.omit(data[[var_name]])))
+    }
+    
+    results_for_var <- list()
+    
+    # 对该变量的每个类别进行亚组分析
+    for (category in var_categories) {
+      if (is.numeric(data[[var_name]])) {
+        # 数值变量的特殊处理
+        if (grepl("≤", category)) {
+          cutoff <- as.numeric(gsub("≤", "", category))
+          subset_data <- data[data[[var_name]] <= cutoff, ]
+        } else {
+          cutoff <- as.numeric(gsub(">", "", category))
+          subset_data <- data[data[[var_name]] > cutoff, ]
+        }
+      } else {
+        subset_data <- data[data[[var_name]] == category, ]
+      }
+      
+      # 计算总人数和事件数（百分比）
+      total_n <- nrow(subset_data)
+      event_n <- sum(subset_data$event == 1, na.rm = TRUE)
+      event_percent <- round(event_n / total_n * 100, 1)
+      event_str <- sprintf("%d (%0.1f%%)", event_n, event_percent)
+      
+      # 在子集上拟合Cox模型
+      tryCatch({
+        # 构建协变量公式
+        cov_formula <- if (length(covariates_m2) > 0) {
+          paste(covariates_m2, collapse = " + ")
+        } else {
+          "1"
+        }
+        
+        model_formula <- as.formula(paste("Surv(time, event) ~ flab100 +", cov_formula))
+        model <- coxph(model_formula, data = subset_data)
+        
+        # 提取结果
+        summary_result <- summary(model)
+        coefs <- summary_result$coefficients
+        
+        # 提取关于暴露变量的系数
+        exposure_row <- which(grepl("flab100", rownames(coefs)))
+        
+        if (length(exposure_row) > 0) {
+          hr <- exp(coefs[exposure_row, "coef"])
+          lower_ci <- exp(coefs[exposure_row, "coef"] - 1.96 * coefs[exposure_row, "se(coef)"])
+          upper_ci <- exp(coefs[exposure_row, "coef"] + 1.96 * coefs[exposure_row, "se(coef)"])
+          p_value <- coefs[exposure_row, "Pr(>|z|)"]  # 提取P值
+          
+          # 保存结果
+          results_for_var[[as.character(category)]] <- data.frame(
+            Subgroup = var_name,
+            Category = category,
+            Level = gsub("flab100", "", rownames(coefs)[exposure_row]),
+            Total = total_n,
+            Event = event_str,
+            HR = hr,
+            Lower_CI = lower_ci,
+            Upper_CI = upper_ci,
+            P_value = p_value,  # 添加P值列
+            stringsAsFactors = FALSE
+          )
+        }
+      }, error = function(e) {
+        message(paste("Error in subgroup", var_name, "-", category, ":", e$message))
+      })
+    }
+    
+    # 合并该变量的所有类别结果
+    if (length(results_for_var) > 0) {
+      var_df <- do.call(rbind, results_for_var)
+      subgroup_results[[var_name]] <- var_df
+      
+      # 计算交互P值
+      interaction_formula <- as.formula(
+        paste("Surv(time, event) ~ flab100 *", var_name, "+", 
+              paste(covariates_m2, collapse = " + "))
+      )
+      
+      interaction_model <- tryCatch({
+        coxph(interaction_formula, data = data)
+      }, error = function(e) {
+        return(NULL)
+      })
+      
+      if (!is.null(interaction_model)) {
+        interaction_terms <- grep(paste0("flab100.*:", var_name), names(coef(interaction_model)), value = TRUE)
+        if (length(interaction_terms) > 0) {
+          interaction_p <- coef(summary(interaction_model))[interaction_terms, "Pr(>|z|)"]
+          interaction_p_values[[var_name]] <- data.frame(
+            Subgroup = var_name,
+            Category = "Interaction",
+            Level = "P for interaction",
+            Total = NA,
+            Event = NA,
+            HR = NA,
+            Lower_CI = NA,
+            Upper_CI = NA,
+            P_value = NA,
+            P_interaction = min(interaction_p)  # 取最小p值
+          )
+        }
+      }
+    }
+  }
+  
+  # 合并所有亚组结果
+  all_subgroups_results <- if (length(subgroup_results) > 0) {
+    do.call(rbind, subgroup_results)
+  } else {
+    data.frame()
+  }
+  if (length(interaction_p_values) > 0) {
+    interaction_df <- do.call(rbind, interaction_p_values)
+  } else {
+    interaction_df <- data.frame(Subgroup="",P_interaction="NA")
+  }
+  
+  # P_interaction <- interaction_df %>% select(Subgroup, P_interaction)
+  
+  # 合并数据集
+  all_subgroups_results <- all_subgroups_results %>%
+    left_join(interaction_df %>% select(Subgroup, P_interaction), by = "Subgroup")
+  
+  # 添加Overall行 - 总体效应
+  tryCatch({
+    # 构建协变量公式
+    cov_formula <- if (length(covariates_m2) > 0) {
+      paste(covariates_m2, collapse = " + ")
+    } else {
+      "1"
+    }
+    
+    model_formula <- as.formula(paste("Surv(time, event) ~ flab100 +", cov_formula))
+    overall_model <- coxph(model_formula, data = data)
+    
+    # 提取结果
+    summary_result <- summary(overall_model)
+    coefs <- summary_result$coefficients
+    
+    # 提取关于暴露变量的系数
+    exposure_row <- which(grepl("flab100", rownames(coefs)))
+    
+    if (length(exposure_row) > 0) {
+      hr <- exp(coefs[exposure_row, "coef"])
+      lower_ci <- exp(coefs[exposure_row, "coef"] - 1.96 * coefs[exposure_row, "se(coef)"])
+      upper_ci <- exp(coefs[exposure_row, "coef"] + 1.96 * coefs[exposure_row, "se(coef)"])
+      p_value <- coefs[exposure_row, "Pr(>|z|)"]  # 提取P值
+      
+      # 计算总人数和事件数
+      total_n <- nrow(data)
+      event_n <- sum(data$event == 1, na.rm = TRUE)
+      event_percent <- round(event_n / total_n * 100, 1)
+      event_str <- sprintf("%d (%0.1f%%)", event_n, event_percent)
+      
+      # 创建Overall行
+      overall_row <- data.frame(
+        Subgroup = "Overall",
+        Category = "Overall",
+        Level = "",
+        Total = total_n,
+        Event = event_str,
+        HR = hr,
+        Lower_CI = lower_ci,
+        Upper_CI = upper_ci,
+        P_value = p_value,  # 添加P值
+        P_interaction = NA,
+        stringsAsFactors = FALSE
+      )
+      
+      # 将Overall行添加到结果顶部
+      all_subgroups_results <- bind_rows(overall_row, all_subgroups_results)
+    }
+  }, error = function(e) {
+    message(paste("Error in overall model:", e$message))
+  })
+  
+  # 使用metadata中的标签替换变量名
+  # 假设metadata包含variable_name和label列
+  if (!is.null(metadata) && "label" %in% colnames(metadata)) {
+    # 创建从变量名到标签的映射
+    label_mapping <- setNames(metadata$label, metadata$variable_name)
+    # 添加Overall的映射
+    label_mapping["Overall"] <- "Overall"
+    
+    # 替换Subgroup列
+    all_subgroups_results$Subgroup <- ifelse(
+      all_subgroups_results$Subgroup %in% names(label_mapping),
+      label_mapping[all_subgroups_results$Subgroup],
+      all_subgroups_results$Subgroup
+    )
+  }
+  
+  # 转换Category显示
+  all_subgroups_results <- all_subgroups_results %>%
+    mutate(
+      Category = case_when(
+        Subgroup !="AKI stage" & Category == "0" ~ "No",
+        Subgroup !="AKI stage" & Category == "1" ~ "Yes",
+        Category == "F" ~ "Female",
+        Category == "M" ~ "Male",
+        TRUE ~ as.character(Category)
+      )
+    )
+  
+  # 格式化数据用于森林图
+  if (nrow(all_subgroups_results) == 0) {
+    stop("亚组分析未生成任何结果，请检查数据、亚组变量和模型公式")
+  }
+  
+  # 创建专业医学期刊风格的森林图数据
+  # 从metadata中提取排序顺序
+  if (!is.null(metadata) && "order" %in% colnames(metadata)) {
+    # 创建排序映射
+    order_mapping <- setNames(metadata$order[metadata$subgroup==1], metadata$label[metadata$subgroup==1])
+    # 添加Overall的排序（设为0）
+    order_mapping <- c(order_mapping, setNames(0, "Overall"))
+  } else {
+    # 如果metadata中没有order列，创建默认排序
+    unique_subgroups <- setdiff(unique(all_subgroups_results$Subgroup), "Overall")
+    order_mapping <- setNames(1:length(unique_subgroups), unique_subgroups)
+    order_mapping["Overall"] <- 0
+  }
+  
+  # 将排序顺序应用到数据
+  all_subgroups_results <- all_subgroups_results %>%
+    mutate(
+      Order = order_mapping[Subgroup],
+      # 确保Overall排在最前面
+      Order = ifelse(Subgroup == "Overall", 0, Order)
+    ) %>%
+    arrange(Order, Subgroup, Category)
+  
+  # 提取Subgroup label,为接下来拼接做准备
+  Group_Header<-all_subgroups_results %>%
+    filter(Subgroup !="Overall")%>%
+    distinct(Order,Subgroup,P_interaction) %>%
+    select(Order,Subgroup,P_interaction)
+  
+  # 1. 拼接Subgroup label,并缩进 category内容
+  # 2. 处理HR_CI，P值 format
+  # 3. P for interaction 仅出现在subgroup header 那一行
+  forest_data <- all_subgroups_results %>% 
+    bind_rows(Group_Header) %>%
+    mutate(
+      HR_CI = ifelse(is.na(HR),"",sprintf("%.2f (%.2f-%.2f)", HR, Lower_CI, Upper_CI)),
+      P_value_str = ifelse(is.na(P_value), "", 
+                           ifelse(P_value < 0.001, "<0.001", sprintf("%.3f", P_value))),  # 格式化P值
+      P_interaction = ifelse(is.na(P_interaction), "", 
+                             ifelse(P_interaction < 0.001, "<0.001", sprintf("%.3f", P_interaction)))
+    ) %>%
+    arrange(Order,Subgroup,desc(is.na(Category)),Category) %>%
+    mutate(Group_Header = ifelse(!is.na(Category) & Category!="Overall", paste0("  ", as.character(Category)), Subgroup),
+           P_interaction = ifelse(!duplicated(P_interaction), P_interaction, "")
+    ) %>%
+    select(Group_Header, Total, Event, HR_CI, P_value_str, HR, Lower_CI, Upper_CI,   P_interaction) %>%  # 添加P值列
+    relocate(Group_Header, Total, Event, HR_CI, P_value_str,P_interaction)  # 调整列顺序
+  
+  # 修复类型不匹配问题
+  forest_data <- forest_data %>%
+    mutate(
+      Total = ifelse(is.na(Total), "", as.character(Total)),
+      Event = ifelse(is.na(Event), "", as.character(Event))
+    )
+  
+  # 添加表头行 - 包含P值列
+  header <- data.frame(
+    Group_Header = "Subgroup",
+    Total = "Total n",
+    Event = "Event n (%)",
+    HR_CI = "HR (95% CI)",
+    P_value_str = "P-value",  # 添加P值列标题
+    P_interaction = "P for interaction",
+    stringsAsFactors = FALSE
+  )
+  
+  # 合并数据（表头在最前面）
+  forest_data <- bind_rows(header, forest_data)
+  
+  # 标识组标题行
+  is_header <- forest_data$Group_Header != "" | 
+    forest_data$Group_Header == "Subgroup"  # 包含表头行
+  
+  # 创建标识汇总行（需要加粗的行）的逻辑向量
+  summary_vector <- rep(FALSE, nrow(forest_data))
+  
+  # 表头行（第一行）需要加粗
+  summary_vector[1] <- TRUE
+  for (i in 2:nrow(forest_data)) {
+    # 获取当前行的Group_Header内容
+    current_header <- forest_data$Group_Header[i]
+    
+    # 识别Overall行
+    if (current_header == "Overall") {
+      summary_vector[i] <- TRUE
+    }
+    # 识别亚组标题行 - 通过检查是否是未缩进的标题
+    else if (!startsWith(current_header, "  ")) {
+      summary_vector[i] <- TRUE
+    }
+  }
+  # 创建与forest_data行数匹配的HR数据向量
+  # 初始化所有行为NA
+  mean_vals <- rep(NA, nrow(forest_data))
+  lower_vals <- rep(NA, nrow(forest_data))
+  upper_vals <- rep(NA, nrow(forest_data))
+  
+  # 找出实际有HR数据的行（类别行）
+  category_rows <- which(!is.na(forest_data$HR))
+  
+  # 从all_subgroups_results中提取HR数据填充到正确位置
+  if (length(category_rows) > 0 && nrow(forest_data) > 0) {
+    mean_vals[category_rows] <- forest_data$HR[category_rows]
+    lower_vals[category_rows] <- forest_data$Lower_CI[category_rows]
+    upper_vals[category_rows] <- forest_data$Upper_CI[category_rows]
+  }
+  
+  # 创建文本矩阵 - 包含P值列
+  label_matrix <- as.matrix(forest_data[, c("Group_Header",  "Total", "Event",  "HR_CI", "P_value_str", "P_interaction")])
+  
+  # 确定合适的x轴范围
+  all_hr_vals <- na.omit(c(all_subgroups_results$Lower_CI, all_subgroups_results$Upper_CI))
+  if (length(all_hr_vals) > 0) {
+    x_min <- max(0.5, floor(min(all_hr_vals)*10)/10)  # 确保最小值不低于0.5
+    x_max <- min(2.5, ceiling(max(all_hr_vals)*10)/10) # 确保最大值不超过2.5
+    x_ticks <- seq(x_min, x_max, length.out = 5)       # 创建5个刻度点
+  } else {
+    x_min <- 0.5
+    x_max <- 2.0
+    x_ticks <- c(0.5, 1.0, 1.5, 2.0)
+  }
+  
+  # 修正横线设置 - 使用一致的语法
+  hrzl_lines <- list()
+  hrzl_lines[["1"]] <- gpar(lty = 1, lwd = 2)  # 顶部线（表头上方）
+  hrzl_lines[["2"]] <- gpar(lty = 1, lwd = 2)  # 顶部线（表头下方）
+  hrzl_lines[[as.character(nrow(forest_data)+1)]] <- gpar(lty = 1, lwd = 2)  # 底部线（最后一行下方）
+  
+  # 定制标题 - 根据testcd
+  title_text <- switch(current_testcd,
+                       "ICU28D" = "28-day all-cause mortality",
+                       "ICUXXD" = "ICU mortality",
+                       "HOSPXXD" = "In-hospital mortality",
+                       "OTHER" = "Other Outcome",
+                       paste("Forest Plot for", current_testcd))  # 默认值
+  
+  # 绘制专业森林图
+  p <- forestplot(
+    labeltext = label_matrix,
+    mean = mean_vals,
+    lower = lower_vals,
+    upper = upper_vals,
+    is.summary = summary_vector,
+    zero = 1,
+    boxsize = 0.2,
+    lineheight = unit(10, "mm"),
+    colgap = unit(4, "mm"),
+    graphwidth = unit(100, "mm"),
+    line.margin = unit(1, "mm"),
+    col = fpColors(
+      box = "#1F497D",    # 方框色：专业蓝
+      lines = "#1F497D",  # 连接线色：森林绿
+      zero = "black",   # 无效线色：醒目红
+      summary = "#8064A2" # 汇总行色：典雅紫
+    ),
+    xlab = "Hazard Ratio",
+    txt_gp = fpTxtGp(
+      label = gpar(cex = 0.9),
+      ticks = gpar(cex = 0.8),
+      xlab = gpar(cex = 1.0),
+      title = gpar(cex = 1.2),
+      summary = list (gpar(fontface = "bold"),
+                      gpar(fill = "gray", col = "gray", lwd = 10)
+      )# 亚组标题加粗
+    ),
+    title = title_text,  # 使用定制标题
+    graph.pos = 6,  # 将图形放在倒数第二列
+    hrzl_lines = hrzl_lines,
+    clip = c(x_min, x_max),
+    lwd.zero = 1.5,
+    lwd.ci = 1.5,
+    lwd.xaxis = 1.5,
+    grid = TRUE,
+    xticks = x_ticks,
+    ci.vertices = TRUE,
+    ci.vertices.height = 0.15
+  ) |> fp_set_zebra_style("#EFEFEF", ignore_subheaders = TRUE)
+  
+  # 创建输出目录（如果不存在）
+  if (!dir.exists("forestplot_output")) {
+    dir.create("forestplot_output")
+  }
+  
+  # 设置图像尺寸
+  width_inch <- 15
+  height_inch <- 11.25
+  
+  # 保存为四种格式
+  base_filename <- paste0("forestplot_output/filab_", current_testcd, "_forestplot")
+  
+  # PNG格式
+  png_filename <- paste0(base_filename, ".png")
+  png(png_filename, width = width_inch, height = height_inch, units = "in", res = 300)
+  print(p)
+  dev.off()
+  
+  # SVG格式
+  svg_filename <- paste0(base_filename, ".svg")
+  svg(svg_filename, width = width_inch, height = height_inch)
+  print(p)
+  dev.off()
+  
+  # JPG格式
+  jpg_filename <- paste0(base_filename, ".jpg")
+  jpeg(jpg_filename, width = width_inch, height = height_inch, units = "in", res = 300, quality = 100)
+  print(p)
+  dev.off()
+  
+  # TIFF格式
+  tif_filename <- paste0(base_filename, ".tif")
+  tiff(tif_filename, width = width_inch, height = height_inch, units = "in", res = 300, compression = "lzw")
+  print(p)
+  dev.off()
+  
+  message(paste("森林图已保存:", png_filename, svg_filename, jpg_filename, tif_filename))
+}
+
+
+```
+
+### 2.使用分类变量绘图: 参考样式
+
+![](https://jintensivecare.biomedcentral.com/articles/10.1186/s40560-025-00797-9/figures/3)
+
+```{r}
+# 更新代码 - 替换为四分类level变量
+if(!require(forestplot)) install.packages("forestplot")
+if(!require(survival)) install.packages("survival")
+if(!require(dplyr)) install.packages("dplyr")
+if(!require(tidyr)) install.packages("tidyr")
+library(forestplot)
+library(survival)
+library(dplyr)
+library(tidyr)
+
+# 定义要分析的testcd列表 - 按需修改
+testcd_list <- c("ICU28D", "HOSPXXD")  # 替换为您的三个testcd值
+
+# 遍历每个testcd生成森林图
+for (current_testcd in testcd_list) {
+  # 读取数据
+  # 筛选特定testcd
+  data <- tte %>% 
+    filter(testcd == current_testcd)  # 根据需求修改
+  
+  # 确保level是因子变量，设置参考水平（Q1作为参考）
+  data$level <- factor(data$level, levels = c("Q1", "Q2", "Q3", "Q4"))
+  
+  # 确保使用正确的协变量和亚组变量 - 根据您的实际设置
+  covariates_m2 <- metadata$variable_name[metadata$covars_m2 == 1]
+  subgroup_vars <- metadata$variable_name[metadata$subgroup == 1]
+  
+  # 确保时间和事件变量是数值型
+  data$time <- as.numeric(data$aval)
+  data$event <- as.numeric(data$cnsr)
+  
+  # 存储亚组分析结果
+  subgroup_results <- list()
+  interaction_p_values <- list()
+  
+  # 对每个亚组变量进行分析
+  for (var_name in subgroup_vars) {
+    # 获取变量类别
+    if (is.numeric(data[[var_name]])) {
+      # 数值变量转换为二分变量
+      median_val <- median(data[[var_name]], na.rm = TRUE)
+      var_categories <- c(paste0("≤", median_val), paste0(">", median_val))
+    } else {
+      var_categories <- sort(unique(na.omit(data[[var_name]])))
+    }
+    
+    results_for_var <- list()
+    
+    # 对该变量的每个类别进行亚组分析
+    for (category in var_categories) {
+      if (is.numeric(data[[var_name]])) {
+        # 数值变量的特殊处理
+        if (grepl("≤", category)) {
+          cutoff <- as.numeric(gsub("≤", "", category))
+          subset_data <- data[data[[var_name]] <= cutoff, ]
+        } else {
+          cutoff <- as.numeric(gsub(">", "", category))
+          subset_data <- data[data[[var_name]] > cutoff, ]
+        }
+      } else {
+        subset_data <- data[data[[var_name]] == category, ]
+      }
+      
+      # 计算总人数和事件数（百分比）
+      total_n <- nrow(subset_data)
+      
+      # 在子集上拟合Cox模型
+      tryCatch({
+        # 构建协变量公式
+        cov_formula <- if (length(covariates_m2) > 0) {
+          paste(covariates_m2, collapse = " + ")
+        } else {
+          "1"
+        }
+        
+        model_formula <- as.formula(paste("Surv(time, event) ~ level +", cov_formula))
+        model <- coxph(model_formula, data = subset_data)
+        
+        # 提取结果
+        summary_result <- summary(model)
+        coefs <- summary_result$coefficients
+        
+        # 为每个level创建结果行 (Q1-Q4)
+        for (lev in levels(data$level)) {
+          # 跳过参考水平Q1（作为参照）
+          if (lev == "Q1") {
+            # 为Q1创建参照行
+            event_n <- sum(subset_data$event[subset_data$level == lev] == 1, na.rm = TRUE)
+            event_percent <- round(event_n / sum(subset_data$level == lev, na.rm = TRUE) * 100, 1)
+            event_str <- sprintf("%d (%0.1f%%)", event_n, event_percent)
+            
+            results_for_var[[paste0(category, "_", lev)]] <- data.frame(
+              Subgroup = var_name,
+              Category = category,
+              Level = lev,
+              Total = sum(subset_data$level == lev, na.rm = TRUE),
+              Event = event_str,
+              HR = 1.0,  # 参考水平HR=1
+              Lower_CI = NA,
+              Upper_CI = NA,
+              P_value = NA,
+              stringsAsFactors = FALSE
+            )
+          } else {
+            # 提取非参考水平的结果
+            row_name <- paste0("level", lev)
+            exposure_row <- which(rownames(coefs) == row_name)
+            
+            if (length(exposure_row) > 0) {
+              event_n <- sum(subset_data$event[subset_data$level == lev] == 1, na.rm = TRUE)
+              event_percent <- round(event_n / sum(subset_data$level == lev, na.rm = TRUE) * 100, 1)
+              event_str <- sprintf("%d (%0.1f%%)", event_n, event_percent)
+              
+              hr <- exp(coefs[exposure_row, "coef"])
+              lower_ci <- exp(coefs[exposure_row, "coef"] - 1.96 * coefs[exposure_row, "se(coef)"])
+              upper_ci <- exp(coefs[exposure_row, "coef"] + 1.96 * coefs[exposure_row, "se(coef)"])
+              p_value <- coefs[exposure_row, "Pr(>|z|)"]  # 提取P值
+              
+              # 保存结果
+              results_for_var[[paste0(category, "_", lev)]] <- data.frame(
+                Subgroup = var_name,
+                Category = category,
+                Level = lev,
+                Total = sum(subset_data$level == lev, na.rm = TRUE),
+                Event = event_str,
+                HR = hr,
+                Lower_CI = lower_ci,
+                Upper_CI = upper_ci,
+                P_value = p_value,
+                stringsAsFactors = FALSE
+              )
+            }
+          }
+        }
+      }, error = function(e) {
+        message(paste("Error in subgroup", var_name, "-", category, ":", e$message))
+      })
+    }
+    
+    # 合并该变量的所有类别结果
+    if (length(results_for_var) > 0) {
+      var_df <- do.call(rbind, results_for_var)
+      subgroup_results[[var_name]] <- var_df
+      
+      # 计算交互P值（使用似然比检验）
+      reduced_formula <- as.formula(
+        paste("Surv(time, event) ~ level +", var_name, "+", 
+              paste(covariates_m2, collapse = " + "))
+      )
+      
+      full_formula <- as.formula(
+        paste("Surv(time, event) ~ level *", var_name, "+", 
+              paste(covariates_m2, collapse = " + "))
+      )
+      
+      reduced_model <- tryCatch({
+        coxph(reduced_formula, data = data)
+      }, error = function(e) {
+        return(NULL)
+      })
+      
+      full_model <- tryCatch({
+        coxph(full_formula, data = data)
+      }, error = function(e) {
+        return(NULL)
+      })
+      
+      if (!is.null(reduced_model) && !is.null(full_model)) {
+        lrt <- anova(reduced_model, full_model)
+        interaction_p <- lrt[2, "Pr(>|Chi|)"]
+        
+        interaction_p_values[[var_name]] <- data.frame(
+          Subgroup = var_name,
+          P_interaction = interaction_p
+        )
+      }
+    }
+  }
+  
+  # 合并所有亚组结果
+  all_subgroups_results <- if (length(subgroup_results) > 0) {
+    do.call(rbind, subgroup_results)
+  } else {
+    data.frame()
+  }
+  
+  # 添加Overall行 - 总体效应
+  tryCatch({
+    # 构建协变量公式
+    cov_formula <- if (length(covariates_m2) > 0) {
+      paste(covariates_m2, collapse = " + ")
+    } else {
+      "1"
+    }
+    
+    model_formula <- as.formula(paste("Surv(time, event) ~ level +", cov_formula))
+    overall_model <- coxph(model_formula, data = data)
+    
+    # 提取结果
+    summary_result <- summary(overall_model)
+    coefs <- summary_result$coefficients
+    
+    # 为每个level创建结果行 (Q1-Q4)
+    overall_results <- list()
+    for (lev in levels(data$level)) {
+      if (lev == "Q1") {
+        # 为Q1创建参照行
+        event_n <- sum(data$event[data$level == lev] == 1, na.rm = TRUE)
+        event_percent <- round(event_n / sum(data$level == lev, na.rm = TRUE) * 100, 1)
+        event_str <- sprintf("%d (%0.1f%%)", event_n, event_percent)
+        
+        overall_results[[lev]] <- data.frame(
+          Subgroup = "Overall",
+          Category = "Overall",
+          Level = lev,
+          Total = sum(data$level == lev, na.rm = TRUE),
+          Event = event_str,
+          HR = 1.0,  # 参考水平HR=1
+          Lower_CI = NA,
+          Upper_CI = NA,
+          P_value = NA,
+          stringsAsFactors = FALSE
+        )
+      } else {
+        # 提取非参考水平的结果
+        row_name <- paste0("level", lev)
+        exposure_row <- which(rownames(coefs) == row_name)
+        
+        if (length(exposure_row) > 0) {
+          event_n <- sum(data$event[data$level == lev] == 1, na.rm = TRUE)
+          event_percent <- round(event_n / sum(data$level == lev, na.rm = TRUE) * 100, 1)
+          event_str <- sprintf("%d (%0.1f%%)", event_n, event_percent)
+          
+          hr <- exp(coefs[exposure_row, "coef"])
+          lower_ci <- exp(coefs[exposure_row, "coef"] - 1.96 * coefs[exposure_row, "se(coef)"])
+          upper_ci <- exp(coefs[exposure_row, "coef"] + 1.96 * coefs[exposure_row, "se(coef)"])
+          p_value <- coefs[exposure_row, "Pr(>|z|)"]  # 提取P值
+          
+          # 保存结果
+          overall_results[[lev]] <- data.frame(
+            Subgroup = "Overall",
+            Category = "Overall",
+            Level = lev,
+            Total = sum(data$level == lev, na.rm = TRUE),
+            Event = event_str,
+            HR = hr,
+            Lower_CI = lower_ci,
+            Upper_CI = upper_ci,
+            P_value = p_value,
+            stringsAsFactors = FALSE
+          )
+        }
+      }
+    }
+    
+    # 将Overall行添加到结果顶部
+    if (length(overall_results) > 0) {
+      overall_df <- do.call(rbind, overall_results)
+      all_subgroups_results <- bind_rows(overall_df, all_subgroups_results)
+    }
+  }, error = function(e) {
+    message(paste("Error in overall model:", e$message))
+  })
+  
+  # 合并交互作用P值
+  if (length(interaction_p_values) > 0) {
+    interaction_df <- do.call(rbind, interaction_p_values)
+    all_subgroups_results <- all_subgroups_results %>%
+      left_join(interaction_df, by = "Subgroup")
+  } else {
+    all_subgroups_results$P_interaction <- NA
+  }
+  
+  # 使用metadata中的标签替换变量名
+  if (!is.null(metadata) && "label" %in% colnames(metadata)) {
+    # 创建从变量名到标签的映射
+    label_mapping <- setNames(metadata$label, metadata$variable_name)
+    # 添加Overall的映射
+    label_mapping["Overall"] <- "Overall"
+    
+    # 替换Subgroup列
+    all_subgroups_results$Subgroup <- ifelse(
+      all_subgroups_results$Subgroup %in% names(label_mapping),
+      label_mapping[all_subgroups_results$Subgroup],
+      all_subgroups_results$Subgroup
+    )
+  }
+  
+  # 转换Category显示
+  all_subgroups_results <- all_subgroups_results %>%
+    mutate(
+      Category = case_when(
+        Subgroup !="AKI stage" & Category == "0" ~ "No",
+        Subgroup !="AKI stage" & Category == "1" ~ "Yes",
+        Category == "F" ~ "Female",
+        Category == "M" ~ "Male",
+        TRUE ~ as.character(Category)
+      )
+    )
+  
+  # 格式化数据用于森林图
+  if (nrow(all_subgroups_results) == 0) {
+    stop("亚组分析未生成任何结果，请检查数据、亚组变量和模型公式")
+  }
+  
+  # 创建专业医学期刊风格的森林图数据
+  # 从metadata中提取排序顺序
+  if (!is.null(metadata) && "order" %in% colnames(metadata)) {
+    # 创建排序映射
+    order_mapping <- setNames(metadata$order[metadata$subgroup==1], metadata$label[metadata$subgroup==1])
+    # 添加Overall的排序（设为0）
+    order_mapping <- c(order_mapping, setNames(0, "Overall"))
+  } else {
+    # 如果metadata中没有order列，创建默认排序
+    unique_subgroups <- setdiff(unique(all_subgroups_results$Subgroup), "Overall")
+    order_mapping <- setNames(1:length(unique_subgroups), unique_subgroups)
+    order_mapping["Overall"] <- 0
+  }
+  
+  # 将排序顺序应用到数据
+  all_subgroups_results <- all_subgroups_results %>%
+    mutate(
+      Order = order_mapping[Subgroup],
+      # 确保Overall排在最前面
+      Order = ifelse(Subgroup == "Overall", 0, Order)
+    ) %>%
+    arrange(Order, Subgroup, Category, Level)
+  
+  # 提取Subgroup label,为接下来拼接做准备
+  Group_Header <- all_subgroups_results %>%
+    filter(Subgroup != "Overall") %>%
+    distinct(Order, Subgroup, P_interaction) %>%
+    select(Order, Subgroup, P_interaction)
+  
+  # 创建森林图数据
+  
+  forest_data <- all_subgroups_results %>% 
+    bind_rows(Group_Header) %>%
+    arrange(Order, Subgroup, desc(is.na(Category)), Category, Level) %>%
+    mutate(
+      HR_CI = ifelse(Level == "Q1", "1 (Ref)", 
+                     sprintf("%.2f (%.2f-%.2f)", HR, Lower_CI, Upper_CI)),
+      P_value_str = ifelse(is.na(P_value), "", 
+                           ifelse(P_value < 0.001, "<0.001", sprintf("%.3f", P_value))),
+      P_interaction = ifelse(is.na(P_interaction), "", 
+                             ifelse(P_interaction < 0.001, "<0.001", sprintf("%.3f", P_interaction))),
+      P_interaction = ifelse(!duplicated(Subgroup), P_interaction, "")
+    ) %>%
+    
+    group_by(Subgroup, Category) %>%
+    mutate(
+      Group_Header = case_when(
+        Subgroup == "Overall" ~ ifelse(row_number() == 1, as.character(Subgroup), ""),
+        !is.na(Category) & Category != "Overall" ~ ifelse(row_number() == 1,paste0("  ", Category),""),
+        TRUE ~ Subgroup
+      )
+      
+    ) %>%  ungroup() %>%
+    select(Group_Header, Level, Total, Event, HR, Lower_CI, Upper_CI, P_value_str, HR_CI, P_interaction) %>%
+    relocate(Group_Header, Level, Total, Event, HR_CI, P_value_str, P_interaction)
+  
+  # 修复类型不匹配问题
+  forest_data <- forest_data %>%
+    mutate(
+      Total = ifelse(is.na(Total), "", as.character(Total)),
+      Event = ifelse(is.na(Event), "", as.character(Event)),
+      P_value_str = ifelse(is.na(P_value_str), "", P_value_str)
+    )
+  
+  # 添加表头行 - 包含P值列
+  header <- data.frame(
+    Group_Header = "Subgroup",
+    Level="Level",
+    Total = "Total n",
+    Event = "Event n (%)",
+    HR_CI = "HR (95% CI)",
+    P_value_str = "P value",
+    P_interaction = "P for interaction",
+    stringsAsFactors = FALSE
+  )
+  
+  # 合并数据（表头在最前面）
+  forest_data <- bind_rows(header, forest_data)
+  
+  # 创建标识汇总行（需要加粗的行）的逻辑向量
+  summary_vector <- rep(FALSE, nrow(forest_data))
+  
+  # 表头行（第一行）需要加粗
+  summary_vector[1] <- TRUE
+  for (i in 2:nrow(forest_data)) {
+    # 获取当前行的Group_Header内容
+    current_header <- forest_data$Group_Header[i]
+    
+    # 识别Overall行
+    if (current_header == "Overall") {
+      summary_vector[i] <- TRUE
+    }
+    # 识别亚组标题行 - 通过检查是否是未缩进的标题
+    else if (!startsWith(current_header, "    ") && current_header != "") {
+      summary_vector[i] <- TRUE
+    }
+  }
+  
+  # 创建与forest_data行数匹配的HR数据向量
+  mean_vals <- rep(NA, nrow(forest_data))
+  lower_vals <- rep(NA, nrow(forest_data))
+  upper_vals <- rep(NA, nrow(forest_data))
+  
+  # 找出实际有HR数据的行
+  category_rows <- which(!is.na(forest_data$HR))
+  
+  # 填充HR数据
+  if (length(category_rows) > 0 && nrow(forest_data) > 0) {
+    mean_vals[category_rows] <- forest_data$HR[category_rows]
+    lower_vals[category_rows] <- forest_data$Lower_CI[category_rows]
+    upper_vals[category_rows] <- forest_data$Upper_CI[category_rows]
+  }
+  
+  # 创建文本矩阵 - 包含P值列
+  label_matrix <- as.matrix(forest_data[, c("Group_Header", "Level", "Total", "Event", "HR_CI", "P_value_str",  "P_interaction")])
+  
+  # 确定合适的x轴范围
+  all_hr_vals <- na.omit(c(all_subgroups_results$Lower_CI, all_subgroups_results$Upper_CI))
+  if (length(all_hr_vals) > 0) {
+    x_min <- min(0.5, floor(min(all_hr_vals)*10)/10)
+    x_max <- max(2.5, ceiling(max(all_hr_vals)*10)/10)
+    x_ticks <- seq(x_min, x_max, length.out = 5)
+  } else {
+    x_min <- 0.5
+    x_max <- 2.0
+    x_ticks <- c(0.5, 1.0, 1.5, 2.0)
+  }
+  
+  # 修正横线设置
+  hrzl_lines <- list()
+  hrzl_lines[["1"]] <- gpar(lty = 1, lwd = 2)
+  hrzl_lines[["2"]] <- gpar(lty = 1, lwd = 2)
+  hrzl_lines[[as.character(nrow(forest_data)+1)]] <- gpar(lty = 1, lwd = 2)
+  
+  # 定制标题 - 根据testcd
+  title_text <- switch(current_testcd,
+                       "ICU28D" = "28-Day ICU Mortality",
+                       "ICUXXD" = "ICU Mortality",
+                       "HOSPXXD" = "In-Hospital Mortality",
+                       "OTHER" = "Other Outcome",
+                       paste("Forest Plot for", current_testcd))
+  
+  # 绘制专业森林图
+  p <- forestplot(
+    labeltext = label_matrix,
+    mean = mean_vals,
+    lower = lower_vals,
+    upper = upper_vals,
+    is.summary = summary_vector,
+    zero = 1,
+    boxsize = 0.2,
+    lineheight = unit(10, "mm"),
+    colgap = unit(4, "mm"),
+    graphwidth = unit(100, "mm"),
+    line.margin = unit(2, "mm"),
+    margin = unit(rep(10, 4), "mm"),
+    col = fpColors(
+      box = "#1F497D",
+      lines = "#1F497D",
+      zero = "black",
+      summary = "#8064A2"
+    ),
+    xlab = "Hazard Ratio",
+    txt_gp = fpTxtGp(
+      label = gpar(cex = 0.9),
+      ticks = gpar(cex = 0.8),
+      xlab = gpar(cex = 1.0),
+      title = gpar(cex = 1.2),
+      summary = list(
+        gpar(fontface = "bold"),
+        gpar(fill = "gray", col = "gray", lwd = 10)
+      )
+    ),
+    title = title_text,
+    graph.pos = 7,
+    hrzl_lines = hrzl_lines,
+    clip = c(x_min, x_max),
+    lwd.zero = 1.5,
+    lwd.ci = 1.5,
+    lwd.xaxis = 1.5,
+    grid = TRUE,
+    xticks = x_ticks,
+    ci.vertices = TRUE,
+    ci.vertices.height = 0.15
+  ) |> fp_set_zebra_style("#EFEFEF", ignore_subheaders = TRUE)
+  
+  # 创建输出目录
+  if (!dir.exists("forestplot_output")) {
+    dir.create("forestplot_output")
+  }
+  
+  # 设置图像尺寸
+  width_inch <- 28
+  height_inch <- 20
+  
+  # 保存为四种格式
+  base_filename <- paste0("forestplot_output/Qlevel_", current_testcd, "_forestplot")
+  
+  # PNG格式
+  png(paste0(base_filename, ".png"), width = 12, height = 20, units = "in", res = 300)
+  print(p)
+  dev.off()
+  
+  # SVG格式
+  svg(paste0(base_filename, ".svg"), width = width_inch, height = height_inch)
+  print(p)
+  dev.off()
+  
+  # JPG格式
+  jpeg(paste0(base_filename, ".jpg"), width = 12, height = 20, units = "in", res = 300, quality = 100)
+  print(p)
+  dev.off()
+  
+  # TIFF格式
+  tiff(paste0(base_filename, ".tif"), width = width_inch, height = height_inch, units = "in", res = 300, compression = "lzw")
+  print(p)
+  dev.off()
+  
+  message(paste("森林图已保存:", base_filename))
+}
+
+
+```
+
+```         
+```
+
+## **FI-Lab增量效应: 多模型AUC及检验+DCA/C-index/NRI计算**
+
+### Table 4 Improvement in discrimination and risk reclassification for xx mortality after addition of FI-Lab
+
+```{r}
+# 包管理：自动安装缺失的包
+required_packages <- c("rms", "Hmisc", "survIDINRI", "purrr", "stringr","officer", "flextable", "dplyr")
+missing_packages <- setdiff(required_packages, rownames(installed.packages()))
+if(length(missing_packages) > 0) install.packages(missing_packages)
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+# 设置全局种子确保可复现性
+set.seed(123)
+
+# # 配置参数
+# time_point <- 28  # ICU28D时间点
+# scores <- c("apsiii", "sapsii", "oasis", "sofa", "sirs", "gcs")  # 所有评分系统
+# prediction_var <- "flab100"
+
+# 主分析函数
+analyze_models <- function(score, data,time_point) {
+  # 1. 构建模型公式
+  original_formula <- as.formula(paste("Surv(time, event) ~", score))
+  enhanced_formula <- as.formula(paste("Surv(time, event) ~", score, "+", prediction_var))
+  
+  # 2. 配置数据环境
+  ddist <- datadist(data)
+  options(datadist = ddist)
+  
+  # 3. 拟合模型
+  original_model <- cph(original_formula, data = data, x = TRUE, y = TRUE, surv = TRUE, time.inc = time_point)
+  enhanced_model <- cph(enhanced_formula, data = data, x = TRUE, y = TRUE, surv = TRUE, time.inc = time_point)
+  
+  # 4. 修正C-index计算：使用0.5 + abs(dxy)/2
+  calc_cindex <- function(model) {
+    pred <- predict(model, type = "lp")
+    dxy_obj <- rcorr.cens(pred, Surv(data$time, data$event))
+    dxy <- dxy_obj["Dxy"]
+    est <- 0.5 + abs(dxy)/2  # 修正后的C-index计算
+    se <- dxy_obj["S.D."] / 2
+    list(
+      est = est,
+      lower = max(0.5, est - 1.96 * se),  # 确保不低于0.5
+      upper = min(1.0, est + 1.96 * se)   # 确保不高于1.0
+    )
+  }
+  
+  cindex_orig <- calc_cindex(original_model)
+  cindex_enh <- calc_cindex(enhanced_model)
+  
+  # 5. 准备协变量矩阵
+  covs0_matrix <- as.matrix(data[[score]])
+  covs1_matrix <- as.matrix(data[, c(score, "flab100")])
+  indat_matrix <- as.matrix(data[, c("time", "event")])
+  
+  # 6. 计算IDI和连续NRI
+  IDI_NRI_results <- IDI.INF(
+    indata = indat_matrix,
+    covs0 = covs0_matrix,
+    covs1 = covs1_matrix,
+    t0 = time_point,
+    npert = 500
+  )
+  
+  # 7. 提取结果
+  list(
+    original = list(
+      score = score,
+      cindex = cindex_orig,
+      label = paste0(toupper(score))
+    ),
+    enhanced = list(
+      score = score,
+      cindex = cindex_enh,
+      IDI = c(
+        est = IDI_NRI_results$m1[1] * 100,
+        lower = IDI_NRI_results$m1[2] * 100,
+        upper = IDI_NRI_results$m1[3] * 100
+      ),
+      NRI = c(
+        est = IDI_NRI_results$m2[1] * 100,
+        lower = IDI_NRI_results$m2[2] * 100,
+        upper = IDI_NRI_results$m2[3] * 100
+      ),
+      IDI_pvalue = IDI_NRI_results$m1[4],
+      NRI_pvalue = IDI_NRI_results$m2[4],
+      label = paste0(toupper(score), " + FI-Lab")
+    )
+  )
+}
+
+# 数据处理和分析主函数
+analyze_and_generate <- function(testcd, time_point) {
+  # 配置参数
+  scores <- c("apsiii", "sapsii", "oasis", "sofa", "sirs", "gcs")
+  prediction_var <- "flab100"
+  
+  # 数据处理
+  analysis_data <- tte %>%
+    filter(testcd == !!testcd) %>%  # 动态过滤
+    select(-any_of(c("Q1", "Q2", "Q3", "Q4"))) %>%
+    mutate(flab100 = as.numeric(flab100)) %>% 
+    filter(!is.na(flab100)) %>%
+    mutate(time = as.numeric(aval),
+           event = as.numeric(cnsr))
+  
+  # 执行分析
+  results <- map(scores, ~ analyze_models(.x, analysis_data, time_point)) %>%
+    map(~ list(original = .x$original, enhanced = .x$enhanced)) %>%
+    flatten()
+  
+  # 生成结果表格
+  results_df <- map_dfr(results, function(res) {
+    if ("IDI" %in% names(res)) {
+      data.frame(
+        Model = res$label,
+        C_index = sprintf("%.3f (%.3f, %.3f)", res$cindex$est, res$cindex$lower, res$cindex$upper),
+        IDI = sprintf("%.2f%% (%.2f%%, %.2f%%)", res$IDI[1], res$IDI[2], res$IDI[3]),
+        IDI_pvalue = ifelse(res$IDI_pvalue < 0.001, "< 0.001", sprintf("%.3f", res$IDI_pvalue)),
+        NRI = sprintf("%.2f%% (%.2f%%, %.2f%%)", res$NRI[1], res$NRI[2], res$NRI[3]),
+        NRI_pvalue = ifelse(res$NRI_pvalue < 0.001, "< 0.001", sprintf("%.3f", res$NRI_pvalue))
+      )
+    } else {
+      data.frame(
+        Model = res$label,
+        C_index = sprintf("%.3f (%.3f, %.3f)", res$cindex$est, res$cindex$lower, res$cindex$upper),
+        IDI = "Ref",
+        IDI_pvalue = "Ref",
+        NRI = "Ref",
+        NRI_pvalue = "Ref"
+      )
+    }
+  })
+  
+  # 生成表格并返回文件名
+  generate_table(testcd, results_df)
+}
+
+# 生成表格函数
+generate_table <- function(testcd, results) {
+# 智能标题生成
+title <- ifelse(str_detect(testcd, "HOSP"), "In-hospital mortality",
+                  ifelse(str_detect(testcd, "ICU"), 
+                         paste0(str_extract(testcd, "\\d+"), "-day all-cause mortality"),
+                         paste(testcd, "Mortality")))
+
+# 创建专业三线表
+ft <- flextable(results) %>%
+  # 设置表格标题
+  set_caption(caption = paste0("Table 4 Improvement in discrimination and risk reclassification for ",title, " after addition of FI-Lab"),
+              style = "Table Caption") %>% 
+  font(fontname = "Times New Roman", part = "all") %>%  # 学术字体
+  set_header_labels(
+    Model = "Model",
+    C_index = "C-index (95% CI)",
+    IDI = "IDI, % (95% CI)",
+    IDI_pvalue = "IDI P-value",
+    NRI = "NRI, % (95% CI)",
+    NRI_pvalue = "NRI P-value"
+  ) %>%
+  theme_booktabs() %>%  # 三线表样式
+  autofit() %>%         # 自动适应列宽
+  align(align = "center", part = "all") %>%  # 内容居中
+  fontsize(size = 10, part = "all") %>%      # 字体大小
+  bold(part = "header") %>%                  # 表头加粗
+  padding(padding = 3, part = "all")         # 单元格内边距
+
+
+# 保存为Word文档
+save_as_docx(ft, 
+             path = paste0("Table 4-", testcd,".docx"), 
+             pr_section = prop_section(page_size = page_size(orient = "landscape")))
+
+}
+
+# 执行分析并生成表格
+# ICU28D分析（Table 4）
+icu_file <- analyze_and_generate(
+  testcd = "ICU28D", 
+  time_point = 28
+)
+
+# HOSPXXD分析（Table 4）
+hosp_file <- analyze_and_generate(
+  testcd = "HOSPXXD", 
+  time_point = 28  # 也设HOSPXXD时间点为28天
+)
+
+# 输出结果
+message(sprintf("生成完成: \n1. %s\n2. %s", icu_file, hosp_file))
+
+```
+
+### Figure 5 ROC curve analysis of the incremental effect of FI-Lab on in-hospital all-cause mortality
+
+```{r}
+# 安装并加载所需包
+required_packages <- c("rms", "Hmisc", "survIDINRI", "timeROC", "ggplot2", "pROC", 
+                       "purrr", "stringr", "dplyr", "gridExtra", "RColorBrewer", "grid","future")
+missing_packages <- setdiff(required_packages, rownames(installed.packages()))
+if(length(missing_packages) > 0) install.packages(missing_packages)
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+# 设置全局种子确保可复现性
+set.seed(123)
+
+# 增强版ROC曲线绘制函数
+generate_roc_plots <- function(testcd, time_point, scores, data) {
+  # 根据testcd生成标题
+  title_text <- ifelse(
+    grepl("ICU", testcd),
+    paste0(
+      "ROC curve analysis of the incremental effect of FI-Lab on ",
+      ifelse(
+        testcd == "ICU28D",
+        "28-day",
+        paste0(gsub("ICU", "", testcd), "-day")
+      ),
+      " all-cause mortality"
+    ),
+    "ROC curve analysis of the incremental effect of FI-Lab on in-hospital mortality"
+  )
+  
+  
+  # 创建存储图形的列表
+  plot_list <- list()
+  
+  # 设置SCI文献配色方案
+  sci_colors <- brewer.pal(8, "Set1")[c(1, 2)]
+  
+  # 对每个评分系统进行处理
+  for (i in seq_along(scores)) {
+    score <- scores[i]
+    
+    # 构建模型公式
+    original_formula <- as.formula(paste("Surv(time, event) ~", score))
+    enhanced_formula <- as.formula(paste("Surv(time, event) ~", score, "+ flab100"))
+    
+    # 配置数据环境
+    ddist <- datadist(data)
+    options(datadist = ddist)
+    
+    # 拟合模型
+    original_model <- cph(original_formula, data = data, x = TRUE, y = TRUE, surv = TRUE, time.inc = time_point)
+    enhanced_model <- cph(enhanced_formula, data = data, x = TRUE, y = TRUE, surv = TRUE, time.inc = time_point)
+    
+    # 获取预测值
+    data$pred_original <- predict(original_model, type = "lp")
+    data$pred_enhanced <- predict(enhanced_model, type = "lp")
+    
+    # 计算ROC曲线和AUC
+    roc_original <- timeROC(T = data$time,
+                            delta = data$event,
+                            marker = data$pred_original,
+                            cause = 1,
+                            weighting = "marginal",
+                            iid = TRUE,
+                            times = time_point)
+    
+    roc_enhanced <- timeROC(T = data$time,
+                            delta = data$event,
+                            marker = data$pred_enhanced,
+                            cause = 1,
+                            weighting = "marginal",
+                            iid = TRUE,
+                            times = time_point)
+    
+    # 计算AUC比较的P值
+    auc_diff_test <- compare(roc_original, roc_enhanced)
+    p_value <- auc_diff_test$p_values_AUC[2]
+    
+    # 正确计算置信区间并提取t=27的值
+    roc_original_ci <- confint(roc_original)
+    roc_enhanced_ci <- confint(roc_enhanced)
+    
+    # 修改后的get_ci函数（专门处理列表结构）
+    get_ci <- function(ci_list) {
+      # 1. 验证输入结构
+      if (!is.list(ci_list) || !all(c("CI_AUC", "CB_AUC") %in% names(ci_list))) {
+        stop("输入必须是包含CLAUC和CB_AUC元素的列表")
+      }
+      
+      # 2. 提取CLAUC矩阵（根据您的结构）
+      clauc_matrix <- ci_list$CI_AUC
+      last_n<-nrow(clauc_matrix)
+      # # 3. 验证矩阵结构 HOSPXXD is 1X2, only t=27
+      # if (!is.matrix(clauc_matrix) || nrow(clauc_matrix) != 2 || ncol(clauc_matrix) != 2) {
+      #   stop("CLAUC元素必须是2x2矩阵")
+      # }
+      
+      # 4. 提取置信区间值（假设最后一行是t=27）
+      # 第一行可能是t=0或其他时间点，第二行是t=27
+      ci_row <- clauc_matrix[last_n, ]  # 获取第二行数据
+      ci_lower <- ci_row[1] / 100  # 第一列是2.5%
+      ci_upper <- ci_row[2] / 100  # 第二列是97.5%
+      
+      return(c(ci_lower, ci_upper))
+    }
+    # 使用示例
+    ci_original <- get_ci(roc_original_ci)  # 输入是列表
+    ci_enhanced <- get_ci(roc_enhanced_ci)
+    
+    # 创建ROC曲线数据框
+    roc_points <- min(nrow(roc_original$TP), nrow(roc_enhanced$TP))
+    roc_df <- data.frame(
+      Sensitivity = c(
+        roc_original$TP[1:roc_points, 2], 
+        roc_enhanced$TP[1:roc_points, 2]
+      ),
+      Specificity = c(
+        1 - roc_original$FP[1:roc_points, 2], 
+        1 - roc_enhanced$FP[1:roc_points, 2]
+      ),
+      Model = rep(
+        c(paste0(toupper(score)), 
+          paste0(toupper(score), " + FI-Lab")), 
+        each = roc_points
+      )
+    )
+    #
+    
+    
+    # 创建插值函数解决曲线点数不一致问题
+    interpolate_roc <- function(roc_obj, n_points = 300) {
+      fpr <- roc_obj$FP[, 2]
+      tpr <- roc_obj$TP[, 2]
+      
+      # 按FPR排序
+      ord <- order(fpr)
+      fpr <- fpr[ord]
+      tpr <- tpr[ord]
+      
+      # 生成统一的FPR序列
+      unified_fpr <- seq(0, 1, length.out = n_points)
+      
+      # 线性插值获取TPR
+      unified_tpr <- approx(fpr, tpr, xout = unified_fpr, method = "linear", rule = 2)$y
+      
+      data.frame(FPR = unified_fpr, TPR = unified_tpr)
+    }
+    
+    # 应用插值
+    roc_orig_interp <- interpolate_roc(roc_original)
+    roc_enh_interp <- interpolate_roc(roc_enhanced)
+    
+    # 创建ROC数据框
+    roc_df <- data.frame(
+      Sensitivity = c(roc_orig_interp$TPR, roc_enh_interp$TPR),
+      Specificity = 1 - c(roc_orig_interp$FPR, roc_enh_interp$FPR),
+      Model = rep(c(paste0(toupper(score)), 
+                    paste0(toupper(score), " + FI-Lab")), 
+                  each = nrow(roc_orig_interp))
+    )
+    
+    # 创建AUC标签
+    is_significant <- p_value < 0.05
+    significance_star <- ifelse(is_significant, "*", "")
+    
+    auc_label <- sprintf(
+      "AUC 1: %.3f (%.3f-%.3f)%s\nAUC 2: %.3f (%.3f-%.3f)%s\n%s",
+      roc_original$AUC[2], ci_original[1], ci_original[2], ifelse(is_significant, "", " "),
+      roc_enhanced$AUC[2], ci_enhanced[1], ci_enhanced[2], ifelse(is_significant, "*", ""),
+      ifelse(p_value < 0.001, 
+             "P < 0.001", 
+             sprintf("P = %.3f", p_value))
+      
+    )
+    
+
+    # 创建ggplot对象
+    p <- ggplot(roc_df, aes(x = 1 - Specificity, y = Sensitivity, color = Model)) +
+      geom_line(linewidth = 1.2) +
+      geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "gray50") +
+      scale_color_manual(values = sci_colors) +
+      labs(title = paste0(toupper(score), " Score + FI-Lab"),  # 修改标题格式
+           x = "1 - Specificity",
+           y = "Sensitivity") +
+      theme_minimal(base_size = 12) +
+      theme(
+        plot.title = element_text(face = "bold", size = 14, hjust = 0.5),
+        legend.position = c(0.75, 0.10),  # 将图例移到图内
+        legend.title = element_blank(),
+        legend.background = element_rect(fill = "white", color = NA),
+        panel.grid.minor = element_blank(),
+        panel.border = element_rect(fill = NA, color = "black")
+      ) +
+      coord_equal() +
+      # 添加AUC文本标签到图内
+      annotate("text", x = 0.5, y = 0.5, label = auc_label, 
+               size = 3.5, hjust = 0, vjust = 1,color = "black")
+    # 添加半透明背景框确保文本可读性
+    # annotate("rect", 
+    #          xmin = 0.55, 
+    #          xmax = 0.95,
+    #          ymin = 0.15, 
+    #          ymax = 0.35,
+    #          alpha = 0.2, 
+    #          fill = "white")
+    
+    plot_list[[i]] <- p
+  }
+  
+  # 组合所有图形
+  combined_plot <- grid.arrange(grobs = plot_list, ncol = 3, 
+                                top = grid::textGrob(title_text, 
+                                                     gp = grid::gpar(fontsize = 16, fontface = "bold")))
+  
+  # 保存为不同格式
+  formats <- c("png", "jpg", "svg", "tiff")
+  for (fmt in formats) {
+    filename <- paste0("Roc_plots/ROC-", testcd, ".", fmt)
+    ggsave(filename, combined_plot, width = 16, height = 10, dpi = 300)
+  }
+  
+  return(paste0("ROC-", testcd, ".", formats))
+}
+
+# 主分析函数保持不变
+analyze_and_generate <- function(testcd, time_point) {
+  # 配置参数
+  scores <- c("apsiii", "sapsii", "oasis", "sofa", "sirs", "gcs")
+  
+  # 数据处理
+  analysis_data <- tte %>%
+    filter(testcd == !!testcd) %>%
+    select(-any_of(c("Q1", "Q2", "Q3", "Q4"))) %>%
+    mutate(flab100 = as.numeric(flab100)) %>% 
+    filter(!is.na(flab100)) %>%
+    mutate(time = as.numeric(aval),
+           event = as.numeric(cnsr))
+  
+  # 生成ROC曲线
+  roc_files <- generate_roc_plots(testcd, time_point, scores, analysis_data)
+  
+  return(roc_files)
+}
+
+# 执行分析并生成图形
+# ICU28D分析
+icu_files <- analyze_and_generate(testcd = "ICU28D", time_point = 27)
+
+# HOSPXXD分析
+hosp_files <- analyze_and_generate(testcd = "HOSPXXD", time_point = 27)
+
+# 输出结果
+message("生成完成:")
+message("ICU28D文件: ", paste(icu_files, collapse = ", "))
+message("HOSPXXD文件: ", paste(hosp_files, collapse = ", "))
+
+```
+
+# SHAP+BORUTA
+
+## Boruta feature selection
+
+```{r}
+# 加载必要的包
+library(Boruta)       # 特征选择
+library(randomForest) # 随机森林
+library(haven)        # 读取SAS数据
+library(readxl)       # 读取Excel文件
+library(dplyr)        # 数据处理
+library(tidyr)        # 数据整理
+library(forcats)      # 因子处理
+
+# ======================
+# 数据验证函数
+# ======================
+validate_data <- function(tte_df, metadata) {
+  if (!is.data.frame(tte_df)) stop("tte_df必须是数据框")
+  required_tte_cols <- c('testcd', 'aval', 'cnsr', 'flab100')
+  missing_tte_cols <- setdiff(required_tte_cols, colnames(tte_df))
+  if (length(missing_tte_cols) > 0) {
+    stop("tte_df缺少必要列: ", paste(missing_tte_cols, collapse = ", "))
+  }
+  
+  if (!is.data.frame(metadata)) stop("metadata必须是数据框")
+  required_meta_cols <- c("xvar", "variable_name")
+  missing_meta_cols <- setdiff(required_meta_cols, colnames(metadata))
+  if (length(missing_meta_cols) > 0) {
+    stop("metadata缺少必要列: ", paste(missing_meta_cols, collapse = ", "))
+  }
+  
+  xvar_names <- metadata %>%
+    filter(xvar == 1) %>%
+    pull(variable_name)
+  
+  if (length(xvar_names) == 0) {
+    stop("metadata中没有标记为xvar=1的自变量")
+  }
+  
+  cat("成功验证数据:\n")
+  cat("  tte_df:", nrow(tte_df), "行", ncol(tte_df), "列\n")
+  cat("  metadata:", nrow(metadata), "行\n")
+  cat("  找到", length(xvar_names), "个自变量\n")
+  
+  return(xvar_names)
+}
+
+# ======================
+# Boruta分析函数（使用原生plot方法）
+# ======================
+run_boruta_analysis <- function(testcd, tte_df, xvar_names) {
+  cat("\n", rep("=", 50), "\n", sep="")
+  cat("处理", testcd, "...\n")
+  cat(rep("=", 50), "\n\n", sep="")
+  
+  # 提取特定testcd的数据
+  test_data <- tte_df %>%
+    filter(testcd == !!testcd) %>%
+    select(-any_of(c('Q1','Q2','Q3','Q4')))
+  
+  cat("  ", testcd, "数据集大小:", nrow(test_data), "行\n")
+  
+  # 清理flab100
+  test_data$flab100 <- as.numeric(test_data$flab100)
+  test_data <- test_data[!is.na(test_data$flab100), ]
+  cat("  清理后数据集大小:", nrow(test_data), "行\n")
+  
+  # 创建二分类目标
+  median_time <- median(test_data$aval)
+  binary_target <- ifelse(test_data$cnsr == 1 & test_data$aval <= median_time, 1, 0)
+  cat("  二分类目标分布: \n")
+  print(table(binary_target))
+  
+  # 提取自变量数据
+  available_xvar <- intersect(xvar_names, colnames(test_data))
+  X <- test_data[, available_xvar] %>%
+    mutate(across(everything(), as.numeric))
+  
+  cat("  使用的自变量:", length(available_xvar), "/", length(xvar_names), "\n")
+  
+  # 运行Boruta
+  cat("  运行Boruta特征选择...\n")
+  set.seed(42)
+  boruta_result <- Boruta(
+    x = X,
+    y = factor(binary_target),
+    doTrace = 2,
+    maxRuns = 200,
+    getImp = getImpRfZ
+  )
+  
+  # 创建输出目录
+  output_dir <- "Feature_selection/boxplot"
+  if (!dir.exists(output_dir)) dir.create(output_dir, recursive = TRUE)
+  
+  # 基础文件名
+  base_path <- file.path(output_dir, paste0(testcd, "_Boruta"))
+  
+  # ======================
+  # 使用Boruta原生plot方法绘图
+  # ======================
+  save_boruta_plot <- function(file_path, testcd, width = 14, height = 10) {
+    # 1. 动态计算参数
+    sci_colors <- c(Confirmed="#1F77B4", Tentative="#FF7F0E", 
+                    Rejected="#D62728", Shadow="#D3D3D3")
+    
+    # 获取真实特征（排除影子特征）
+    features <- rownames(attStats(boruta_result))
+    real_features <- features[!grepl("^shadow", features)]
+    n_features <- length(features)
+    
+    # 3. 动态边距计算（根据特征数量）
+    bottom_margin <- max(20, 8 + n_features * 0.3)  # 每特征增加0.3单位边距
+    right_margin <- max(10, 8 + n_features * 0.1)   # 为图例预留空间
+    
+    # 重构绘图函数
+    plot_boruta <- function() {
+      # 动态调整边距
+      bottom_margin <- max(15, 8 + n_features * 0.3)
+      right_margin <- max(10, 8 + n_features * 0.1)
+      
+      par(
+        mar = c(bottom_margin, 8, 8, right_margin) + 0.1,
+        xpd = TRUE,
+        cex.axis = 1.1,
+        cex.lab = 1.3,
+        cex.main = 1.5
+      )
+      
+      plot(boruta_result, main = ifelse(testcd == "ICU28D", 
+                                        "Boruta Feature Importance - 28-day all-cause mortality",
+                                        "Boruta Feature Importance - In-hospital mortality"),
+           sort=T,
+           colCode = sci_colors,
+           whichShadow=c(T,T,T),
+           cex.axis=0.8, 
+           las=2, 
+           xlab=" ", 
+           ylab = "Z-Score Importance")
+      
+      mtext("Variables", side = 1, 
+            line = 5,                   # 关键：提升标签位置
+            cex = 1.2)                  # 适当放大
+      
+      # 完整图例
+      legend("topright",
+             inset = c(-0.18, 0),
+             legend = c("Confirmed", "Tentative", "Rejected", "Shadow"),
+             fill = sci_colors,
+             title = "Decision",
+             cex = 0.8)
+    }
+    
+    # 5. 多格式保存
+    img_formats <- c("png", "jpg", "tiff", "svg")
+    for (fmt in img_formats) {
+      output_file <- paste0(file_path, ".", fmt)
+      
+      if (fmt %in% c("png", "jpg", "tiff")) {
+        # 动态尺寸：特征越多图像越高
+        res <- 300
+        height_adj <- max(10, n_features * 0.4)  # 每特征0.4英寸高度
+        width_px <- width * res
+        height_px <- height_adj * res
+        
+        if (fmt == "png") png(output_file, width = width_px, height = height_px, res = res)
+        if (fmt == "jpg") jpeg(output_file, width = width_px, height = height_px, res = res)
+        if (fmt == "tiff") tiff(output_file, width = width_px, height = height_px, res = res)
+      } else {
+        svg(output_file, width = width, height = max(10, n_features * 0.4))
+      }
+      
+      plot_boruta()
+      dev.off()
+    }
+    cat("优化图像已保存:", paste0(file_path, ".{", paste(img_formats, collapse = ","), "}\n"))
+  }
+  # Save plots
+  save_boruta_plot(base_path,testcd)
+  cat("  Plots saved in four formats: PNG, JPG, SVG, TIFF\n")
+  # Save CSV results
+  imp_df <- attStats(boruta_result) %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("feature") %>%
+    select(feature, boruta_decision = decision, boruta_ranking = medianImp)
+  
+  write.csv(imp_df, paste0(base_path, "_Results.csv"), row.names = FALSE)
+  cat("  Boruta results saved to: ", base_path, "_Results.csv\n", sep = "")
+  
+  
+  return(boruta_result)
+}
+# ======================
+# 主执行流程
+# ======================
+tte_df <- tte  # 从环境获取数据
+
+# 验证数据并获取自变量列表
+xvar_names <- validate_data(tte_df, metadata)
+
+# 目标testcd（只处理ICU28D和HOSPXXD）
+target_testcds <- c('ICU28D',"HOSPXXD")
+all_testcds <- unique(tte_df$testcd)
+
+cat("\n开始处理指定测试指标:\n")
+for (testcd in target_testcds) {
+  if (testcd %in% all_testcds) {
+    cat("\n", rep("=", 30), "\n", sep="")
+    cat("处理", testcd, "\n")
+    cat(rep("=", 30), "\n\n", sep="")
+    boruta_result <- run_boruta_analysis(testcd, tte_df, xvar_names)
+  } else {
+    cat("跳过 '", testcd, "'，因其不在数据中\n", sep="")
+  }
+}
+
+cat("\n分析完成! 所有结果保存至 Feature_selection/boxplot 目录\n")
+
+```
+
+## SHAP: 见Python代码
